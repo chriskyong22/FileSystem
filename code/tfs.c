@@ -41,7 +41,8 @@ int get_avail_ino() {
 	unsigned int bitmapBlock = superblock->i_bitmap_blk;
 	char* bitMap = malloc(sizeof(char) * bitMap);
 	bio_read(bitmapBlock, bitMap);
-	for(unsigned long byteIndex = 0; byteIndex < BLOCK_SIZE; byteIndex++) {
+	unsigned int maxByte = MAX_INUM / 8.0
+	for(unsigned int byteIndex = 0; byteIndex < maxByte; byteIndex++) {
 		char* byteLocation = (bitMap + byteIndex);
 		// For each char, mask it to see if there is a free inode within the char
 		// if there is a free inode within a char, the char will not equal 255. 
@@ -83,7 +84,8 @@ int get_avail_blkno() {
 	unsigned int bitmapBlock = superblock->d_bitmap_blk;
 	char* bitMap = malloc(sizeof(char) * bitMap);
 	bio_read(bitmapBlock, bitMap);
-	for(unsigned long byteIndex = 0; byteIndex < BLOCK_SIZE; byteIndex++) {
+	unsigned int maxByte = MAX_DNUM / 8.0
+	for(unsigned long byteIndex = 0; byteIndex < maxByte; byteIndex++) {
 		char* byteLocation = (bitMap + byteIndex);
 		// For each char, mask it to see if there is a free datablock within the char
 		// if there is a free datablock within a char, the char will not equal 255. 
