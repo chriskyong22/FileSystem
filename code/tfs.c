@@ -22,9 +22,18 @@
 #include "block.h"
 #include "tfs.h"
 
+unsigned long customCeil(double num);
+#define SUPERBLOCK_BLOCK 0
+#define INODE_BITMAP_BLOCK 1
+#define DATA_BITMAP_BLOCK 2
+#define INODE_REGION_BLOCK 3
+
 char diskfile_path[PATH_MAX];
 struct superblock* superBlock = NULL;
+
 // Declare your in-memory data structures here
+
+
 
 /* 
  * Get available inode number from bitmap
@@ -225,10 +234,22 @@ int tfs_mkfs() {
 	// update inode for root directory
 	
 	dev_init(diskfile_path);
-	superBlock = calloc(1, sizeof(struct superblock));
-	// Would bitmap be in one block so 4096 bytes for the inode and data bitmaps?
-	inodeBitMap = calloc(1, BLOCK_SIZE);
-
+	struct superblock superBlockInfo = {
+		MAGIC_NUM, MAX_INUM, MAX_DNUM, INODE_BITMAP_BLOCK, DATA_BITMAP_BLOCK, INODE_REGION_BLOCK
+	}
+	// INode Regions starts blockIndex 3 and spans across MAX_INUM / (BLOCK_SIZE/ INODE SIZE) therefore
+	// + 1 to get next unused block or where datablock region starts 
+	superBlockInfo.d_start_blk = 1 + INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / (BLOCK_SIZE / sizeof(struct inode)));
+	
+	char* superblockBuffer = calloc(1, BLOCK_SIZE);
+	memcpy(superblockBuffer, superBlockInfo, sizeof(struct superblock));
+	bio_write(SUPERBLOCK_BLOCK, superblockBuffer);
+	free(superblockBuffer);
+	char* bitMap = calloc(1, BLOCK_SIZE);
+	bio_write(INODE_BITMAP_BLOCK, bitMap);
+	bio_write(DATA_BITMAP_BLOCK, bitMap);
+	//TO DO UPDATE BITMAP INFO for ROOT and INODE for ROOT 
+	free(bitMap);
 	return 0;
 }
 
@@ -443,6 +464,10 @@ static struct fuse_operations tfs_ope = {
 	.release	= tfs_release
 };
 
+unsigned long customCeil(double num) {
+	unsigned long floor = (unsigned long) num;
+	return (num == floor) ? floor : floor + 1;
+}
 
 int main(int argc, char *argv[]) {
 	int fuse_stat;
