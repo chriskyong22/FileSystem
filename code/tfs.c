@@ -23,7 +23,7 @@
 #include "tfs.h"
 
 char diskfile_path[PATH_MAX];
-
+struct superblock* superBlock = NULL;
 // Declare your in-memory data structures here
 
 /* 
@@ -36,7 +36,35 @@ int get_avail_ino() {
 	// Step 2: Traverse inode bitmap to find an available slot
 
 	// Step 3: Update inode bitmap and write to disk 
-
+	const int CHAR_IN_BITS = sizeof(char) * 8;
+	const int BYTE_MASK = (1 << (CHAR_IN_BITS)) - 1; 
+	unsigned int bitmapBlock = superblock->i_bitmap_blk;
+	char* bitMap = malloc(sizeof(char) * bitMap);
+	bio_read(bitmapBlock, bitMap);
+	for(unsigned long byteIndex = 0; byteIndex < BLOCK_SIZE; byteIndex++) {
+		char* byteLocation = (bitMap + byteIndex);
+		// For each char, mask it to see if there is a free inode within the char
+		// if there is a free inode within a char, the char will not equal 255. 
+		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
+			for(int bitIndex = 0; bitIndex < CHAR_IN_BITS; bitIndex++) {
+			/*
+				bitMask values ~ 0b1 = 1, 0b10 = 2, 0b100 = 4, 0b1000 = 8
+				0b10000 = 16, 0b100000 = 32, 0b1000000 = 64, 0b10000000 = 128
+			*/
+				int bitMask = 1 << bitIndex;
+				if(((*byteLocation) & bitMask) == 0) {
+					// The iNode Number is (byteIndex * 8) + bitIndex.
+					// Since each byte hold 8 inodes, then bitIndex
+					// indicates a inode within a char.
+					(*byteLocation) |= bitMask;
+					bio_write(bitmapBlock, bitMap);
+					free(bitMap);
+					return (byteIndex * 8) + bitIndex;
+				}
+			}
+		}
+	}
+	
 	return 0;
 }
 
@@ -50,7 +78,35 @@ int get_avail_blkno() {
 	// Step 2: Traverse data block bitmap to find an available slot
 
 	// Step 3: Update data block bitmap and write to disk 
-
+	const int CHAR_IN_BITS = sizeof(char) * 8;
+	const int BYTE_MASK = (1 << (CHAR_IN_BITS)) - 1; 
+	unsigned int bitmapBlock = superblock->d_bitmap_blk;
+	char* bitMap = malloc(sizeof(char) * bitMap);
+	bio_read(bitmapBlock, bitMap);
+	for(unsigned long byteIndex = 0; byteIndex < BLOCK_SIZE; byteIndex++) {
+		char* byteLocation = (bitMap + byteIndex);
+		// For each char, mask it to see if there is a free datablock within the char
+		// if there is a free datablock within a char, the char will not equal 255. 
+		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
+			for(int bitIndex = 0; bitIndex < CHAR_IN_BITS; bitIndex++) {
+			/*
+				bitMask values ~ 0b1 = 1, 0b10 = 2, 0b100 = 4, 0b1000 = 8
+				0b10000 = 16, 0b100000 = 32, 0b1000000 = 64, 0b10000000 = 128
+			*/
+				int bitMask = 1 << bitIndex;
+				if(((*byteLocation) & bitMask) == 0) {
+					// The data Number is (byteIndex * 8) + bitIndex.
+					// Since each byte hold 8 inodes, then bitIndex
+					// indicates a datablock within a char.
+					(*byteLocation) |= bitMask;
+					bio_write(bitmapBlock, bitMap);
+					free(bitMap);
+					return (byteIndex * 8) + bitIndex;
+				}
+			}
+		}
+	}
+	
 	return 0;
 }
 
@@ -64,7 +120,14 @@ int readi(uint16_t ino, struct inode *inode) {
   // Step 2: Get offset of the inode in the inode on-disk block
 
   // Step 3: Read the block from disk and then copy into inode structure
-
+	
+	unsigned int numberOfINodesPerBlock = BLOCK_SIZE / sizeof(struct inode);
+	unsigned int blockNumber = ino / numberOfINodesPerBlock;
+	iNode_blockNumber = superblock->i_start_blk + blockNumber;
+	char* buffer = malloc(sizeof(BLOCK_SIZE));
+	bio_read(iNode_blockNumber, buffer); 
+	memcpy(inode, buffer + (sizeof(struct inode) * (ino % numberOfINodesPerBlock)),sizeof(struct inode));
+	free(buffer);
 	return 0;
 }
 
@@ -75,7 +138,15 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 2: Get the offset in the block where this inode resides on disk
 
 	// Step 3: Write inode to disk 
-
+	unsigned int numberOfINodesPerBlock = BLOCK_SIZE / sizeof(struct inode);
+	unsigned int blockNumber = ino / numberOfINodesPerBlock;
+	iNode_blockNumber = superblock->i_start_blk + blockNumber;
+	char* buffer = malloc(sizeof(BLOCK_SIZE));
+	bio_read(iNode_blockNumber, buffer);
+	memcpy(buffer + (sizeof(struct inode) * (ino % numberOfINodesPerBlock)), inode, sizeof(struct inode));
+	bio_write(iNode_blockNumber, buffer); 
+	free(buffer);
+	
 	return 0;
 }
 
@@ -140,16 +211,21 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 int tfs_mkfs() {
 
 	// Call dev_init() to initialize (Create) Diskfile
-
+	
 	// write superblock information
 
 	// initialize inode bitmap
-
+		
 	// initialize data block bitmap
 
 	// update bitmap information for root directory
 
 	// update inode for root directory
+	
+	dev_init(diskfile_path);
+	superBlock = calloc(1, sizeof(struct superblock));
+	// Would bitmap be in one block so 4096 bytes for the inode and data bitmaps?
+	inodeBitMap = calloc(1, BLOCK_SIZE);
 
 	return 0;
 }
@@ -173,7 +249,7 @@ static void tfs_destroy(void *userdata) {
 	// Step 1: De-allocate in-memory data structures
 
 	// Step 2: Close diskfile
-
+	dev_close();
 }
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
