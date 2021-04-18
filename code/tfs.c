@@ -27,6 +27,10 @@ unsigned long customCeil(double num);
 #define INODE_BITMAP_BLOCK 1
 #define DATA_BITMAP_BLOCK 2
 #define INODE_REGION_BLOCK 3
+#define FILE_TYPE 0
+#define DIRECTORY_TYPE 1
+#define HARD_LINK_TYPE 2
+#define SYMBIOTIC_LINK_TYPE 3
 
 char diskfile_path[PATH_MAX];
 struct superblock* superBlock = NULL;
@@ -173,8 +177,36 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 
   // Step 3: Read directory's data block and check each directory entry.
   //If the name matches, then copy directory entry to dirent structure
+	struct inode dirINode;
+	readi(ino, &dirINode);
 
-	return 0;
+	if (dirINode->type != DIRECTORY_TYPE) {
+		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dirINode->type); 
+	}
+	
+	uint32_t size = dirINode->size;
+	uint32_t allocatedBlocks = size / BLOCK_SIZE;
+	uint32_t maxDirectSize = 16 * BLOCK_SIZE;
+	uint32_t iteration = size < maxDirectSize ? customCeil(size / BLOCK_SIZE) : 16;
+	
+	for(int directPointerIndex = 0; directPointerIndex < iteration; directPointerIndex++) {
+		if (dirINode->direct_ptr[directPointerIndex] != NULL) {
+			// READ IN BLOCK
+			// Traverse by sizeof(dirent)
+			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
+		}
+	}
+	size -= maxDirectSize;
+	uint32_t maxIndirectSize = 8 * BLOCK_SIZE * BLOCK_SIZE;
+	iteration = size < maxIndirectSize : customCeil(size / (BLOCK_SIZE * BLOCK_SIZE)) ? 8;
+	
+	for(int indirectPointerIndex = 0; indirectPointerIndex < iteration; indirectPointerIndex++) {
+		// READ IN INDIRECT BLOCK (CONTAINS BLOCK_SIZE/ sizeof(uint32_t) pointers to data blocks that contain DATA)
+		// FOR EACH VALID DATA BLOCK -> Traverse by sizeof(dirent)
+		// For each iteration, check if the dirent structure has fname and if so, copy to dirent
+	}
+	// If reached this point, could not find the directory entry given the ino
+	return -1;
 }
 
 int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
@@ -191,6 +223,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	// Write directory entry
 
+	
 	return 0;
 }
 
@@ -201,8 +234,27 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	// Step 2: Check if fname exist
 
 	// Step 3: If exist, then remove it from dir_inode's data block and write to disk
-
-	return 0;
+	uint32_t size = dir_inode->size;
+	uint32_t allocatedBlocks = size / BLOCK_SIZE;
+	uint32_t maxDirectSize = 16 * BLOCK_SIZE;
+	uint32_t iteration = size < maxDirectSize ? customCeil(size / BLOCK_SIZE) : 16;
+	for(int directPointerIndex = 0; directPointerIndex < iteration; directPointerIndex++) {
+		if (dirINode->direct_ptr[directPointerIndex] != NULL) {
+			// READ IN BLOCK
+			// Traverse by sizeof(dirent)
+			// For each iteration, check if the dirent structure has fname and if so, memcopy to null it out and then write to block
+		}
+	}
+	size -= maxDirectSize;
+	uint32_t maxIndirectSize = 8 * BLOCK_SIZE * BLOCK_SIZE;
+	iteration = size < maxIndirectSize : customCeil(size / (BLOCK_SIZE * BLOCK_SIZE)) ? 8;
+	
+	for(int indirectPointerIndex = 0; indirectPointerIndex < iteration; indirectPointerIndex++) {
+		// READ IN INDIRECT BLOCK (CONTAINS BLOCK_SIZE/ sizeof(uint32_t) pointers to data blocks that contain DATA)
+		// FOR EACH VALID DATA BLOCK -> Traverse by sizeof(dirent)
+		// For each iteration, check if the dirent structure has fname and if so, memcopy to null it out and then write to block
+	}
+	return -1;
 }
 
 /* 
@@ -212,7 +264,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
-
+	
 	return 0;
 }
 
