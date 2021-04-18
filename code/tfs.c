@@ -50,6 +50,7 @@ char inodeBitmap[BLOCK_SIZE] = {0};
 char dataBitmap[BLOCK_SIZE] = {0};
 struct superblock superBlock;
 static const struct dirent emptyDirentStruct;
+static const struct inode emptyInodeStruct;
 
 // Declare your in-memory data structures here
 
@@ -168,10 +169,10 @@ int writei(uint16_t ino, struct inode *inode) {
 	return 0;
 }
 
-int readDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len) {
-	for(int directIndex = 0; directIndex < MAX_DIRENT_PER_BLOCK; directIndex++) {
+int findInDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len) {
+	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
 		(*dirEntry) = emptyDirentStruct;
-		memcpy(dirEntry, datablock + (directIndex * (sizeof(struct dirent))), sizeof(struct dirent));
+		memcpy(dirEntry, datablock + (direntIndex * (sizeof(struct dirent))), sizeof(struct dirent));
 		if (name_len == dirEntry->len && strcmp(dirEntry->name, fname) == 0) {
 			return 1;
 		}
@@ -197,30 +198,21 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dirINode.type); 
 	}
 	
-	uint32_t size = dirINode.size;
-	uint32_t allocatedBlocks = size / BLOCK_SIZE;
-	uint32_t iteration = size < MAX_DIRECT_SIZE ? customCeil(size / DIRECT_BLOCK_SIZE) : 16;
 	char* buffer = calloc(1, BLOCK_SIZE);
-	for(int directPointerIndex = 0; directPointerIndex < iteration; directPointerIndex++) {
+	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
 		// Currently assuming the direct ptrs are block locations and not memory addressses 
 		if (dirINode.direct_ptr[directPointerIndex] != 0) {
 			// READ IN BLOCK
 			// Traverse by sizeof(dirent)
 			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
 			bio_read(dirINode.direct_ptr[directPointerIndex], buffer);
-			if (readDirectoryBlock(buffer, dirent, fname, name_len) == 1) {
+			if (findInDirectoryBlock(buffer, dirent, fname, name_len) == 1) {
 				return 1;
 			}
 		}
 	}
-	if (size < MAX_DIRECT_SIZE) {
-		(*dirent) = emptyDirentStruct;
-		return -1;
-	}
-	size -= MAX_DIRECT_SIZE;
-	iteration = size < MAX_INDIRECT_SIZE ? customCeil(size / INDIRECT_BLOCK_SIZE) : 8;
 	
-	for(int indirectPointerIndex = 0; indirectPointerIndex < iteration; indirectPointerIndex++) {
+	for(int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		// READ IN INDIRECT BLOCK (CONTAINS BLOCK_SIZE/ sizeof(uint32_t) pointers to data blocks that contain DATA)
 		// FOR EACH VALID DATA BLOCK -> Traverse by sizeof(dirent)
 		// For each iteration, check if the dirent structure has fname and if so, copy to dirent
@@ -248,15 +240,39 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	if (dir_find(dir_inode.ino, fname, name_len, &dirEntry) == 1) {
 		return -1;
 	}
-	
-	if (dir_inode.size % BLOCK_SIZE >= sizeof(struct dirent) ) {
-		
-	} else {
-		// need to allocate a new data block 
+	struct dirent toInsertEntry = emptyDirentStruct;
+	toInsertEntry.ino = f_ino;
+	toInsertEntry.valid = 1;
+	memcpy(&toInsertEntry.name, fname, name_len);
+	toInsertEntry.len = name_len;
+	// need to allocate a new data block 
+	char* datablock = malloc(sizeof(char) * BLOCK_SIZE);
+	for (int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
+		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
+			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
+			for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
+				memcpy(&dirEntry, datablock + (direntIndex * (sizeof(struct dirent))), sizeof(struct dirent));
+				if (dirEntry.valid == 0) {
+					memcpy(datablock + (direntIndex * sizeof(struct dirent)), &toInsertEntry, sizeof(struct dirent));
+					dir_inode.size += sizeof(struct dirent);
+					writei(dir_inode.ino, &dir_inode);
+					bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+					return 1;
+				}
+			}
+		} else {
+			int newDataBlockIndex = get_avail_blkno();
+			dir_inode.direct_ptr[directPointerIndex] = newDataBlockIndex;
+			memset(datablock, 0, sizeof(char) * BLOCK_SIZE);
+			memcpy(datablock, &toInsertEntry, sizeof(struct dirent));
+			dir_inode.size += sizeof(struct dirent);
+			writei(dir_inode.ino, &dir_inode);
+			bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+			return 1;
+		}
 	}
-	
-	dir_inode.size += sizeof(struct dirent);
-	return 0;
+
+	return -1;
 }
 
 int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
@@ -337,9 +353,25 @@ int tfs_mkfs() {
 	memcpy(superblockBuffer, &superBlock, sizeof(struct superblock));
 	bio_write(SUPERBLOCK_BLOCK, superblockBuffer);
 	free(superblockBuffer);
+	int inodeNumber = get_avail_ino();
+	struct inode rootINode = emptyInodeStruct;
+	rootINode.ino = inodeNumber;
+	rootINode.valid = 1; 
+	rootINode.type = DIRECTORY_TYPE;
+	rootINode.link = 1; // Not sure what to do for this 
+	dir_add(rootINode, rootINode.ino, ".", sizeof("."));
+	/*
+	uint16_t	ino;				 inode number 
+	uint16_t	valid;				 validity of the inode 
+	uint32_t	size;				 size of the file 
+	uint32_t	type;				 type of the file 
+	uint32_t	link;				 link count 
+	int			direct_ptr[16];		 direct pointer to data block 
+	int			indirect_ptr[8];	 indirect pointer to data block 
+	struct stat	vstat;		
+	*/
 	bio_write(INODE_BITMAP_BLOCK, &inodeBitmap);
-	bio_write(DATA_BITMAP_BLOCK, &dataBitmap);
-	//TO DO UPDATE BITMAP INFO for ROOT and INODE for ROOT 
+	bio_write(DATA_BITMAP_BLOCK, &dataBitmap); 
 	return 0;
 }
 
