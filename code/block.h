@@ -10,6 +10,9 @@
 
 #define BLOCK_SIZE 4096
 
+//Disk size set to 32MB
+#define DISK_SIZE 32*1024*1024
+
 void dev_init(const char* diskfile_path);
 int dev_open(const char* diskfile_path);
 void dev_close();

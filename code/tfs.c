@@ -23,16 +23,31 @@
 #include "tfs.h"
 
 unsigned long customCeil(double num);
-#define SUPERBLOCK_BLOCK 0
-#define INODE_BITMAP_BLOCK 1
-#define DATA_BITMAP_BLOCK 2
-#define INODE_REGION_BLOCK 3
-#define FILE_TYPE 0
-#define DIRECTORY_TYPE 1
-#define HARD_LINK_TYPE 2
-#define SYMBIOTIC_LINK_TYPE 3
+int readDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len);
+unsigned int getInodeIndexWithinBlock(uint16_t ino);
+unsigned int getInodeBlock(uint16_t ino);
+#define SUPERBLOCK_BLOCK (0)
+#define INODE_BITMAP_BLOCK (1)
+#define DATA_BITMAP_BLOCK (2)
+#define INODE_REGION_BLOCK (3)
+#define FILE_TYPE (0)
+#define DIRECTORY_TYPE (1)
+#define HARD_LINK_TYPE (2)
+#define SYMBIOTIC_LINK_TYPE (3)
+#define MAX_DIRECT_POINTERS (16)
+#define MAX_INDIRECT_POINTERS (8)
+#define DIRECT_BLOCK_SIZE (BLOCK_SIZE)
+#define MAX_DIRECT_SIZE (MAX_DIRECT_POINTERS * DIRECT_BLOCK_SIZE)
+#define INDIRECT_BLOCK_SIZE (BLOCK_SIZE * BLOCK_SIZE)
+#define MAX_INDIRECT_SIZE (MAX_INDIRECT_POINTERS * INDIRECT_BLOCK_SIZE)
+#define MAX_INODE_PER_BLOCK ((BLOCK_SIZE) / sizeof(struct inode))
+#define MAX_DIRENT_PER_BLOCK ((BLOCK_SIZE) / sizeof(struct dirent))
+#define CHAR_IN_BITS (sizeof(char) * 8)
+#define BYTE_MASK ((1 << CHAR_IN_BITS) - 1)
 
 char diskfile_path[PATH_MAX];
+char inodeBitmap[BLOCK_SIZE] = {0};
+char dataBitmap[BLOCK_SIZE] = {0};
 struct superblock superBlock;
 static const struct dirent emptyDirentStruct;
 
@@ -50,14 +65,9 @@ int get_avail_ino() {
 	// Step 2: Traverse inode bitmap to find an available slot
 
 	// Step 3: Update inode bitmap and write to disk 
-	const int CHAR_IN_BITS = sizeof(char) * 8;
-	const int BYTE_MASK = (1 << (CHAR_IN_BITS)) - 1; 
-	unsigned int bitmapBlock = superBlock.i_bitmap_blk;
-	char* bitMap = malloc(sizeof(char) * BLOCK_SIZE);
-	bio_read(bitmapBlock, bitMap);
 	unsigned int maxByte = MAX_INUM / 8.0;
 	for(unsigned int byteIndex = 0; byteIndex < maxByte; byteIndex++) {
-		char* byteLocation = (bitMap + byteIndex);
+		char* byteLocation = (inodeBitmap + byteIndex);
 		// For each char, mask it to see if there is a free inode within the char
 		// if there is a free inode within a char, the char will not equal 255. 
 		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
@@ -72,8 +82,7 @@ int get_avail_ino() {
 					// Since each byte hold 8 inodes, then bitIndex
 					// indicates a inode within a char.
 					(*byteLocation) |= bitMask;
-					bio_write(bitmapBlock, bitMap);
-					free(bitMap);
+					bio_write(superBlock.i_bitmap_blk, inodeBitmap);
 					return (byteIndex * 8) + bitIndex;
 				}
 			}
@@ -93,14 +102,9 @@ int get_avail_blkno() {
 	// Step 2: Traverse data block bitmap to find an available slot
 
 	// Step 3: Update data block bitmap and write to disk 
-	const int CHAR_IN_BITS = sizeof(char) * 8;
-	const int BYTE_MASK = (1 << (CHAR_IN_BITS)) - 1; 
-	unsigned int bitmapBlock = superBlock.d_bitmap_blk;
-	char* bitMap = malloc(sizeof(char) * BLOCK_SIZE);
-	bio_read(bitmapBlock, bitMap);
 	unsigned int maxByte = MAX_DNUM / 8.0;
 	for(unsigned long byteIndex = 0; byteIndex < maxByte; byteIndex++) {
-		char* byteLocation = (bitMap + byteIndex);
+		char* byteLocation = (dataBitmap + byteIndex);
 		// For each char, mask it to see if there is a free datablock within the char
 		// if there is a free datablock within a char, the char will not equal 255. 
 		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
@@ -113,11 +117,11 @@ int get_avail_blkno() {
 				if(((*byteLocation) & bitMask) == 0) {
 					// The data Number is (byteIndex * 8) + bitIndex.
 					// Since each byte hold 8 inodes, then bitIndex
-					// indicates a datablock within a char.
+					// indicates a datablock within a char and have to add the
+					// starting region of the data block.
 					(*byteLocation) |= bitMask;
-					bio_write(bitmapBlock, bitMap);
-					free(bitMap);
-					return (byteIndex * 8) + bitIndex;
+					bio_write(superBlock.d_bitmap_blk, dataBitmap);
+					return superBlock.d_start_blk + ((byteIndex * 8) + bitIndex) ;
 				}
 			}
 		}
@@ -137,12 +141,11 @@ int readi(uint16_t ino, struct inode *inode) {
 
   // Step 3: Read the block from disk and then copy into inode structure
 	
-	unsigned int numberOfINodesPerBlock = BLOCK_SIZE / sizeof(struct inode);
-	unsigned int blockNumber = ino / numberOfINodesPerBlock;
+	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
 	char* buffer = malloc(sizeof(BLOCK_SIZE));
 	bio_read(iNode_blockNumber, buffer); 
-	memcpy(inode, buffer + (sizeof(struct inode) * (ino % numberOfINodesPerBlock)),sizeof(struct inode));
+	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)),sizeof(struct inode));
 	free(buffer);
 	return 0;
 }
@@ -154,12 +157,11 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 2: Get the offset in the block where this inode resides on disk
 
 	// Step 3: Write inode to disk 
-	unsigned int numberOfINodesPerBlock = BLOCK_SIZE / sizeof(struct inode);
-	unsigned int blockNumber = ino / numberOfINodesPerBlock;
+	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
 	char* buffer = malloc(sizeof(BLOCK_SIZE));
 	bio_read(iNode_blockNumber, buffer);
-	memcpy(buffer + (sizeof(struct inode) * (ino % numberOfINodesPerBlock)), inode, sizeof(struct inode));
+	memcpy(buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), inode, sizeof(struct inode));
 	bio_write(iNode_blockNumber, buffer); 
 	free(buffer);
 	
@@ -167,11 +169,10 @@ int writei(uint16_t ino, struct inode *inode) {
 }
 
 int readDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len) {
-	uint32_t maxDirentIndex = BLOCK_SIZE / (sizeof(struct dirent));
-	for(int directIndex = 0; directIndex < maxDirentIndex; directIndex++) {
+	for(int directIndex = 0; directIndex < MAX_DIRENT_PER_BLOCK; directIndex++) {
 		(*dirEntry) = emptyDirentStruct;
 		memcpy(dirEntry, datablock + (directIndex * (sizeof(struct dirent))), sizeof(struct dirent));
-		if (strcmp(dirEntry->name, fname) == 0) {
+		if (name_len == dirEntry->len && strcmp(dirEntry->name, fname) == 0) {
 			return 1;
 		}
 	}
@@ -198,22 +199,26 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	
 	uint32_t size = dirINode.size;
 	uint32_t allocatedBlocks = size / BLOCK_SIZE;
-	uint32_t maxDirectSize = 16 * BLOCK_SIZE;
-	uint32_t iteration = size < maxDirectSize ? customCeil(size / BLOCK_SIZE) : 16;
+	uint32_t iteration = size < MAX_DIRECT_SIZE ? customCeil(size / DIRECT_BLOCK_SIZE) : 16;
 	char* buffer = calloc(1, BLOCK_SIZE);
 	for(int directPointerIndex = 0; directPointerIndex < iteration; directPointerIndex++) {
 		// Currently assuming the direct ptrs are block locations and not memory addressses 
 		if (dirINode.direct_ptr[directPointerIndex] != 0) {
-			bio_read(dirINode.direct_ptr[directPointerIndex], buffer);
-			readDirectoryBlock(buffer, dirent, fname, name_len);
 			// READ IN BLOCK
 			// Traverse by sizeof(dirent)
 			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
+			bio_read(dirINode.direct_ptr[directPointerIndex], buffer);
+			if (readDirectoryBlock(buffer, dirent, fname, name_len) == 1) {
+				return 1;
+			}
 		}
 	}
-	size -= maxDirectSize;
-	uint32_t maxIndirectSize = 8 * BLOCK_SIZE * BLOCK_SIZE;
-	iteration = size < maxIndirectSize ? customCeil(size / (BLOCK_SIZE * BLOCK_SIZE)) : 8;
+	if (size < MAX_DIRECT_SIZE) {
+		(*dirent) = emptyDirentStruct;
+		return -1;
+	}
+	size -= MAX_DIRECT_SIZE;
+	iteration = size < MAX_INDIRECT_SIZE ? customCeil(size / INDIRECT_BLOCK_SIZE) : 8;
 	
 	for(int indirectPointerIndex = 0; indirectPointerIndex < iteration; indirectPointerIndex++) {
 		// READ IN INDIRECT BLOCK (CONTAINS BLOCK_SIZE/ sizeof(uint32_t) pointers to data blocks that contain DATA)
@@ -239,8 +244,18 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Update directory inode
 
 	// Write directory entry
+	struct dirent dirEntry = emptyDirentStruct;
+	if (dir_find(dir_inode.ino, fname, name_len, &dirEntry) == 1) {
+		return -1;
+	}
 	
+	if (dir_inode.size % BLOCK_SIZE >= sizeof(struct dirent) ) {
+		
+	} else {
+		// need to allocate a new data block 
+	}
 	
+	dir_inode.size += sizeof(struct dirent);
 	return 0;
 }
 
@@ -251,6 +266,7 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	// Step 2: Check if fname exist
 
 	// Step 3: If exist, then remove it from dir_inode's data block and write to disk
+	struct dirent dirent = emptyDirentStruct;
 	uint32_t size = dir_inode.size;
 	uint32_t allocatedBlocks = size / BLOCK_SIZE;
 	uint32_t maxDirectSize = 16 * BLOCK_SIZE;
@@ -261,6 +277,9 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			// Traverse by sizeof(dirent)
 			// For each iteration, check if the dirent structure has fname and if so, memcopy to null it out and then write to block
 		}
+	}
+	if (size < MAX_DIRECT_SIZE) {
+		return -1;
 	}
 	size -= maxDirectSize;
 	uint32_t maxIndirectSize = 8 * BLOCK_SIZE * BLOCK_SIZE;
@@ -318,11 +337,9 @@ int tfs_mkfs() {
 	memcpy(superblockBuffer, &superBlock, sizeof(struct superblock));
 	bio_write(SUPERBLOCK_BLOCK, superblockBuffer);
 	free(superblockBuffer);
-	char* bitMap = calloc(1, BLOCK_SIZE);
-	bio_write(INODE_BITMAP_BLOCK, bitMap);
-	bio_write(DATA_BITMAP_BLOCK, bitMap);
+	bio_write(INODE_BITMAP_BLOCK, &inodeBitmap);
+	bio_write(DATA_BITMAP_BLOCK, &dataBitmap);
 	//TO DO UPDATE BITMAP INFO for ROOT and INODE for ROOT 
-	free(bitMap);
 	return 0;
 }
 
@@ -547,6 +564,14 @@ static struct fuse_operations tfs_ope = {
 unsigned long customCeil(double num) {
 	unsigned long floor = (unsigned long) num;
 	return (num == floor) ? floor : floor + 1;
+}
+
+unsigned int getInodeBlock(uint16_t ino) {
+	return ino / BLOCK_SIZE;
+}
+
+unsigned int getInodeIndexWithinBlock(uint16_t ino) {
+	return ino % BLOCK_SIZE;
 }
 
 int main(int argc, char *argv[]) {
