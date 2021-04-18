@@ -121,7 +121,7 @@ int get_avail_blkno() {
 					// starting region of the data block.
 					(*byteLocation) |= bitMask;
 					bio_write(superBlock.d_bitmap_blk, dataBitmap);
-					return superBlock.d_start_blk + ((byteIndex * 8) + bitIndex) ;
+					return superBlock.d_start_blk + ((byteIndex * 8) + bitIndex);
 				}
 			}
 		}
@@ -567,11 +567,12 @@ unsigned long customCeil(double num) {
 }
 
 unsigned int getInodeBlock(uint16_t ino) {
-	return ino / BLOCK_SIZE;
+	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
+	return superBlock.i_start_blk + blockNumber;
 }
 
 unsigned int getInodeIndexWithinBlock(uint16_t ino) {
-	return ino % BLOCK_SIZE;
+	return ino % MAX_INODE_PER_BLOCK;
 }
 
 int main(int argc, char *argv[]) {
