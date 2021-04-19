@@ -91,7 +91,7 @@ int get_avail_ino() {
 		}
 	}
 	
-	return 0;
+	return -1;
 }
 
 /* 
@@ -129,7 +129,7 @@ int get_avail_blkno() {
 		}
 	}
 	
-	return 0;
+	return -1;
 }
 
 /* 
@@ -147,7 +147,7 @@ int readi(uint16_t ino, struct inode *inode) {
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
 	char* buffer = malloc(sizeof(BLOCK_SIZE));
 	bio_read(iNode_blockNumber, buffer); 
-	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)),sizeof(struct inode));
+	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), sizeof(struct inode));
 	free(buffer);
 	return 0;
 }
@@ -170,12 +170,27 @@ int writei(uint16_t ino, struct inode *inode) {
 	return 0;
 }
 
-int findInDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len) {
+int findInDirectBlock (char* datablock, struct dirent* dirEntry, const char* fname, size_t name_len) {
 	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
-		(*dirEntry) = emptyDirentStruct;
 		memcpy(dirEntry, datablock + (direntIndex * (sizeof(struct dirent))), sizeof(struct dirent));
 		if (dirEntry->valid == 1 && name_len == dirEntry->len && strcmp(dirEntry->name, fname) == 0) {
 			return 1;
+		}
+	}
+	(*dirEntry) = emptyDirentStruct;
+	return -1;
+}
+
+int findInIndirectBlock (char* indirectBlock, struct dirent* dirEntry, const char* fname, size_t name_len) {
+	int directBlockNumber = 0;
+	char directDataBlock[BLOCK_SIZE] = {0};
+	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
+		if (directBlockNumber != 0) { 
+			bio_read(directBlockNumber, directDataBlock);
+			if (findInDirectBlock(directDataBlock, dirEntry, fname, name_len) == 1) {
+				return 1;
+			}
 		}
 	}
 	return -1;
@@ -200,32 +215,21 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	}
 	
 	char datablock[BLOCK_SIZE] = {0};
+	// Currently assuming the direct ptrs are block locations and not memory addressses 
 	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
-		// Currently assuming the direct ptrs are block locations and not memory addressses 
 		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
-			// READ IN BLOCK
-			// Traverse by sizeof(dirent)
-			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
 			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
-			if (findInDirectoryBlock(datablock, dirent, fname, name_len) == 1) {
+			if (findInDirectBlock(datablock, dirent, fname, name_len) == 1) {
 				return 1;
 			}
 		}
 	}
-	
-	char directDataBlock[BLOCK_SIZE] = {0};
-	int directBlock = 0;
+
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-				memcpy(&directBlock, datablock + (sizeof(int) * directIndex), sizeof(int));
-				if (directBlock != 0) { 
-					bio_read(directBlock, directDataBlock);
-					if (findInDirectoryBlock(directDataBlock, dirent, fname, name_len) == 1) {
-						return 1;
-					}
-				}
+			if (findInIndirectBlock(datablock, dirent, fname, name_len) == 1) {
+				return 1;
 			}
 		}
 	}
@@ -235,13 +239,38 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	return -1;
 }
 
-int writeInDirectoryBlock(char* datablock, struct dirent* toInsert, int block) {
-	struct dirent dirEntry = emptyDirentStruct;
+int addInDirectBlock(char* datablock, struct dirent* toInsert, int directBlockIndex) {
 	struct dirent* dirents = (struct dirent*) datablock;
-	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
+	for (int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
 		if (dirents[direntIndex].valid == 0) {
 			memcpy(datablock + (direntIndex * sizeof(struct dirent)), toInsert, sizeof(struct dirent));
-			bio_write(block, datablock);
+			bio_write(directBlockIndex, datablock);
+			return 1;
+		}
+	}
+	return -1;
+}
+
+int addInIndirectBlock (char* indirectBlock, struct dirent* toInsert, int indirectBlockIndex) {
+	int directBlockNumber = 0;
+	char directDataBlock[BLOCK_SIZE] = {0};
+	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
+		if (directBlockNumber != 0) { 
+			bio_read(directBlockNumber, directDataBlock);
+			if (addInDirectBlock(directDataBlock, toInsert, directBlockNumber) == 1) {
+				return 1;
+			}
+		} else {
+			// Need to allocate new direct block 
+			directBlockNumber = get_avail_blkno();
+			// Update Indirect Block entries to include this new direct block
+			memcpy(indirectBlock + (directIndex * sizeof(int)), &directBlockNumber, sizeof(int));
+			bio_write(indirectBlockIndex, indirectBlock);
+			// Update the direct block to include the dirent struct at index 0 
+			memset(directDataBlock, 0, BLOCK_SIZE);
+			memcpy(directDataBlock, toInsert, sizeof(struct dirent));
+			bio_write(directBlockNumber, directDataBlock);
 			return 1;
 		}
 	}
@@ -261,11 +290,15 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Update directory inode
 
 	// Write directory entry
-	struct dirent dirEntry = emptyDirentStruct;
-	if (dir_find(dir_inode.ino, fname, name_len, &dirEntry) == 1) {
+	if (dir_inode.type != DIRECTORY_TYPE) {
+		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
+	}
+	
+	struct dirent toInsertEntry = emptyDirentStruct;
+	if (dir_find(dir_inode.ino, fname, name_len, &toInsertEntry) == 1) {
 		return -1;
 	}
-	struct dirent toInsertEntry = emptyDirentStruct;
+	
 	toInsertEntry.ino = f_ino;
 	toInsertEntry.valid = 1;
 	memcpy(&toInsertEntry.name, fname, name_len);
@@ -275,7 +308,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	for (int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
 		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
 			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
-			if (writeInDirectoryBlock(datablock, &toInsertEntry, dir_inode.direct_ptr[directPointerIndex]) == 1) {
+			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
@@ -283,7 +316,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		} else {
 			// need to allocate a new data block 
 			dir_inode.direct_ptr[directPointerIndex] = get_avail_blkno();
-			memset(datablock, 0, sizeof(char) * BLOCK_SIZE);
+			memset(datablock, 0, BLOCK_SIZE);
 			memcpy(datablock, &toInsertEntry, sizeof(struct dirent));
 			bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
 			dir_inode.size += sizeof(struct dirent);
@@ -297,42 +330,36 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-				memcpy(&directBlock, datablock + (sizeof(int) * directIndex), sizeof(int));
-				if (directBlock != 0) { 
-					bio_read(directBlock, directDataBlock);
-					if (writeInDirectoryBlock(directDataBlock, &toInsertEntry, directBlock) == 1) {
-						dir_inode.size += sizeof(struct dirent);
-						writei(dir_inode.ino, &dir_inode);
-						return 1;
-					}
-				} else {
-					// need to allocate a data block for dirent structs
-					int newDataBlockIndex = get_avail_blkno();
-					memcpy(datablock + (sizeof(int) * directIndex), &newDataBlockIndex, sizeof(int));
-					memset(directDataBlock, 0, sizeof(char) * BLOCK_SIZE);
-					memcpy(directDataBlock, &toInsertEntry, sizeof(struct dirent));
-					dir_inode.size += sizeof(struct dirent);
-					writei(dir_inode.ino, &dir_inode);
-					bio_write(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-					bio_write(newDataBlockIndex, directDataBlock);
-					return 1;
-				}
+			if (addInIndirectBlock(datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
+				dir_inode.size += sizeof(struct dirent);
+				writei(dir_inode.ino, &dir_inode);
+				return 1;
 			}
 		} else {
-			// need to allocate a new data block full of direct pointers 
-			int newDataBlockIndex = get_avail_blkno();
-			dir_inode.indirect_ptr[indirectPointerIndex] = newDataBlockIndex;
-			memset(datablock, 0, sizeof(char) * BLOCK_SIZE);
-			// need to allocate another data block for dirent structs
-			newDataBlockIndex = get_avail_blkno();
-			memcpy(datablock, &newDataBlockIndex, sizeof(int));
-			memset(directDataBlock, 0, sizeof(char) * BLOCK_SIZE);
+			// need to allocate a new indirect block
+			int indirectBlockIndex = get_avail_blkno();
+			if (indirectBlockIndex == -1) {
+				printf("[E] Could not allocate a new block for the indirect block\n");
+			}
+			
+			// need to allocate a direct block for the entry
+			directBlock = get_avail_blkno();
+			if (directBlock == -1) {
+				printf("[E] Could not allocate a new block for the direct block\n");
+			}
+			// Update the indirect block to include the new direct block
+			memset(datablock, 0, BLOCK_SIZE);
+			memcpy(datablock, &directBlock, sizeof(int));
+			bio_write(indirectBlockIndex, datablock);
+			
+			// Update the direct block to include the new dirent struct at index 0
+			memset(directDataBlock, 0, BLOCK_SIZE);
 			memcpy(directDataBlock, &toInsertEntry, sizeof(struct dirent));
+			bio_write(directBlock, directDataBlock);
+			
+			dir_inode.indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
 			dir_inode.size += sizeof(struct dirent);
 			writei(dir_inode.ino, &dir_inode);
-			bio_write(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			bio_write(newDataBlockIndex, directDataBlock);
 			return 1;
 		}
 	}
@@ -340,12 +367,28 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	return -1;
 }
 
-int removeInDirectoryBlock (char* datablock, const char *fname, size_t name_len) {
+int removeInDirectBlock (char* datablock, const char *fname, size_t name_len, int directBlockIndex) {
 	struct dirent* dirents = (struct dirent*) datablock;
 	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
 		if (dirents[direntIndex].valid == 1 && dirents[direntIndex].len == name_len && strcmp(dirents[direntIndex].name, fname) == 0) {
 			dirents[direntIndex].valid = 0;
+			bio_write(directBlockIndex, datablock);
 			return 1;
+		}
+	}
+	return -1;
+}
+
+int removeInIndirectBlock (char* indirectBlock, const char *fname, size_t name_len, int indirectBlockIndex) {
+	int directBlockNumber = 0;
+	char directDataBlock[BLOCK_SIZE] = {0};
+	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
+		if (directBlockNumber != 0) { 
+			bio_read(directBlockNumber, directDataBlock);
+			if (removeInDirectBlock(directDataBlock, fname, name_len, directBlockNumber) == 1) {
+				return 1;
+			}
 		}
 	}
 	return -1;
@@ -365,14 +408,9 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	
 	char datablock[BLOCK_SIZE] = {0};
 	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
-		// Currently assuming the direct ptrs are block locations and not memory addressses 
 		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
-			// READ IN BLOCK
-			// Traverse by sizeof(dirent)
-			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
 			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
-			if (removeInDirectoryBlock(datablock, fname, name_len) == 1) {
-				bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+			if (removeInDirectBlock(datablock, fname, name_len, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
@@ -380,22 +418,13 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 		}
 	}
 	
-	char directDataBlock[BLOCK_SIZE] = {0};
-	int directBlock = 0;
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-				memcpy(&directBlock, datablock + (sizeof(int) * directIndex), sizeof(int));
-				if (directBlock != 0) { 
-					bio_read(directBlock, directDataBlock);
-					if (removeInDirectoryBlock(directDataBlock, fname, name_len) == 1) {
-						bio_write(directBlock, directDataBlock);
-						dir_inode.size -= sizeof(struct dirent);
-						writei(dir_inode.ino, &dir_inode);
-						return 1;
-					}
-				}
+			if (removeInIndirectBlock(datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
+				dir_inode.size -= sizeof(struct dirent);
+				writei(dir_inode.ino, &dir_inode);
+				return 1;
 			}
 		}
 	}
@@ -418,7 +447,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	int pathBufferIndex = 0;
 	while(path[index] != '\0') {
 		if (path[index] == '\\') { 
-			if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 2, &dirEntry) == -1) {
+			if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 1, &dirEntry) == -1) {
 				return -1;
 			}
 			readi(dirEntry.ino, inode);
@@ -426,11 +455,11 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 			pathBufferIndex = 0;
 		} else {
 			pathBuffer[pathBufferIndex] = path[index];
+			pathBufferIndex++; 
 		}
-		pathBufferIndex++; 
 		index++;
 	}
-	if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 2, &dirEntry) == -1) {
+	if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 1, &dirEntry) == -1) {
 		return -1;
 	}
 	readi(dirEntry.ino, inode);
@@ -476,6 +505,7 @@ int tfs_mkfs() {
 	rootINode.valid = 1; 
 	rootINode.type = DIRECTORY_TYPE;
 	rootINode.link = 1; // Not sure what to do for this 
+	writei(inodeNumber, &rootINode);
 	dir_add(rootINode, rootINode.ino, ".", sizeof("."));
 	/*
 	uint16_t	ino;				 inode number 
