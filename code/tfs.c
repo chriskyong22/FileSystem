@@ -373,6 +373,8 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
 			if (removeInDirectoryBlock(datablock, fname, name_len) == 1) {
 				bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+				dir_inode.size -= sizeof(struct dirent);
+				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
 		}
@@ -389,6 +391,8 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 					bio_read(directBlock, directDataBlock);
 					if (removeInDirectoryBlock(directDataBlock, fname, name_len) == 1) {
 						bio_write(directBlock, directDataBlock);
+						dir_inode.size -= sizeof(struct dirent);
+						writei(dir_inode.ino, &dir_inode);
 						return 1;
 					}
 				}
