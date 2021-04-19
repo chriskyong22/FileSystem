@@ -311,7 +311,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			// need to allocate a new data block full of direct pointers 
 			int newDataBlockIndex = get_avail_blkno();
 			dir_inode.indirect_ptr[indirectPointerIndex] = newDataBlockIndex;
+			// need to allocate another data block for dirent structs
 			newDataBlockIndex = get_avail_blkno();
+			memset(datablock, 0, sizeof(char) * BLOCK_SIZE);
 			memcpy(datablock, &newDataBlockIndex, sizeof(int));
 			memset(directDataBlock, 0, sizeof(char) * BLOCK_SIZE);
 			memcpy(directDataBlock, &toInsertEntry, sizeof(struct dirent));
