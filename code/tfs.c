@@ -45,6 +45,7 @@ unsigned int getInodeBlock(uint16_t ino);
 #define CHAR_IN_BITS (sizeof(char) * 8)
 #define BYTE_MASK ((1 << CHAR_IN_BITS) - 1)
 #define DIRECT_POINTERS_IN_BLOCK (BLOCK_SIZE / sizeof(int))
+#define MAX_BLOCKS ((DISK_SIZE) / (BLOCK_SIZE))
 
 char diskfile_path[PATH_MAX];
 char inodeBitmap[BLOCK_SIZE] = {0};
@@ -52,6 +53,7 @@ char dataBitmap[BLOCK_SIZE] = {0};
 struct superblock superBlock;
 static const struct dirent emptyDirentStruct;
 static const struct inode emptyInodeStruct;
+uint16_t rootInodeNumber;
 
 // Declare your in-memory data structures here
 
@@ -466,6 +468,25 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	return 1;
 }
 
+void initializeStat(struct inode* inode) {
+	inode->vstat.st_ino = inode->ino;
+	inode->vstat.st_gid = getgid();
+	inode->vstat.st_uid = getuid();
+	if (inode->type == DIRECTORY_TYPE) {
+		inode->vstat.st_mode = S_IFDIR;
+	} else if (inode->type == FILE_TYPE) {
+		inode->vstat.st_mode = S_IFREG;
+	} else if (inode->type == HARD_LINK_TYPE) {
+		inode->vstat.st_mode = S_IFREG;
+	} else if (inode->type == SYMBIOTIC_LINK_TYPE) {
+		inode->vstat.st_mode = S_IFLNK;
+	}
+	inode->vstat.st_mode |= S_IRWXU;
+	inode->vstat.st_nlink = inode->link;
+	inode->vstat.st_size = inode->size;
+	time(&(inode->vstat.st_mtime));
+}
+
 /* 
  * Make file system
  */
@@ -493,18 +514,21 @@ int tfs_mkfs() {
 	superBlock.i_start_blk = INODE_REGION_BLOCK;
 	// INode Regions starts blockIndex 3 and spans across MAX_INUM / (BLOCK_SIZE/ INODE SIZE) therefore
 	// + 1 to get next unused block or where datablock region starts 
-	superBlock.d_start_blk = 1 + INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / (BLOCK_SIZE / sizeof(struct inode)));
+	superBlock.d_start_blk = 1 + INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / MAX_INODE_PER_BLOCK);
 	
 	char* superblockBuffer = calloc(1, BLOCK_SIZE);
 	memcpy(superblockBuffer, &superBlock, sizeof(struct superblock));
 	bio_write(SUPERBLOCK_BLOCK, superblockBuffer);
 	free(superblockBuffer);
+	
 	int inodeNumber = get_avail_ino();
 	struct inode rootINode = emptyInodeStruct;
+	rootInodeNumber = inodeNumber;
 	rootINode.ino = inodeNumber;
 	rootINode.valid = 1; 
 	rootINode.type = DIRECTORY_TYPE;
 	rootINode.link = 1; // Not sure what to do for this 
+	initializeStat(&rootINode);
 	writei(inodeNumber, &rootINode);
 	dir_add(rootINode, rootINode.ino, ".", sizeof("."));
 	/*
@@ -556,12 +580,17 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	// Step 1: call get_node_by_path() to get inode from path
 
 	// Step 2: fill attribute of file into stbuf from inode
-
+	struct inode inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+		return -1;
+	}
+	/*
 	stbuf->st_mode   = S_IFDIR | 0755;
 	stbuf->st_nlink  = 2;
 	time(&stbuf->st_mtime);
-
-	return 0;
+	*/
+	(*stbuf) = inode.vstat;
+	return 1;
 }
 
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
