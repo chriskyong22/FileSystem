@@ -340,6 +340,17 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	return -1;
 }
 
+int removeInDirectoryBlock (char* datablock, const char *fname, size_t name_len) {
+	struct dirent* dirents = (struct dirent*) datablock;
+	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
+		if (dirents[direntIndex].valid == 1 && dirents[direntIndex].len == name_len && strcmp(dirents[direntIndex].name, fname) == 0) {
+			dirents[direntIndex].valid = 0;
+			return 1;
+		}
+	}
+	return -1;
+}
+
 int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and checks each directory entry of dir_inode
@@ -347,30 +358,45 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	// Step 2: Check if fname exist
 
 	// Step 3: If exist, then remove it from dir_inode's data block and write to disk
-	struct dirent dirent = emptyDirentStruct;
-	uint32_t size = dir_inode.size;
-	uint32_t allocatedBlocks = size / BLOCK_SIZE;
-	uint32_t maxDirectSize = 16 * BLOCK_SIZE;
-	uint32_t iteration = size < maxDirectSize ? customCeil(size / BLOCK_SIZE) : 16;
-	for(int directPointerIndex = 0; directPointerIndex < iteration; directPointerIndex++) {
+
+	if (dir_inode.type != DIRECTORY_TYPE) {
+		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
+	}
+	
+	char datablock[BLOCK_SIZE] = {0};
+	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
+		// Currently assuming the direct ptrs are block locations and not memory addressses 
 		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
 			// READ IN BLOCK
 			// Traverse by sizeof(dirent)
-			// For each iteration, check if the dirent structure has fname and if so, memcopy to null it out and then write to block
+			// For each iteration, check if the dirent structure has fname and if so, copy to dirent
+			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
+			if (removeInDirectoryBlock(datablock, fname, name_len) == 1) {
+				bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+				return 1;
+			}
 		}
 	}
-	if (size < MAX_DIRECT_SIZE) {
-		return -1;
-	}
-	size -= maxDirectSize;
-	uint32_t maxIndirectSize = 8 * BLOCK_SIZE * BLOCK_SIZE;
-	iteration = size < maxIndirectSize ? customCeil(size / (BLOCK_SIZE * BLOCK_SIZE)) : 8;
 	
-	for(int indirectPointerIndex = 0; indirectPointerIndex < iteration; indirectPointerIndex++) {
-		// READ IN INDIRECT BLOCK (CONTAINS BLOCK_SIZE/ sizeof(uint32_t) pointers to data blocks that contain DATA)
-		// FOR EACH VALID DATA BLOCK -> Traverse by sizeof(dirent)
-		// For each iteration, check if the dirent structure has fname and if so, memcopy to null it out and then write to block
+	char directDataBlock[BLOCK_SIZE] = {0};
+	int directBlock = 0;
+	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
+		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
+			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
+			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+				memcpy(&directBlock, datablock + (sizeof(int) * directIndex), sizeof(int));
+				if (directBlock != 0) { 
+					bio_read(directBlock, directDataBlock);
+					if (removeInDirectoryBlock(directDataBlock, fname, name_len) == 1) {
+						bio_write(directBlock, directDataBlock);
+						return 1;
+					}
+				}
+			}
+		}
 	}
+	
+	// If reached this point, could not find the directory entry given the ino
 	return -1;
 }
 
