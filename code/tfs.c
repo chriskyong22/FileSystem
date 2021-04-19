@@ -411,8 +411,30 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
-	
-	return 0;
+	int index = 0;
+	readi(ino, inode);
+	struct dirent dirEntry = emptyDirentStruct;
+	char pathBuffer[512] = {0};
+	int pathBufferIndex = 0;
+	while(path[index] != '\0') {
+		if (path[index] == '\\') { 
+			if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 2, &dirEntry) == -1) {
+				return -1;
+			}
+			readi(dirEntry.ino, inode);
+			memset(pathBuffer, '\0', 512);
+			pathBufferIndex = 0;
+		} else {
+			pathBuffer[pathBufferIndex] = path[index];
+		}
+		pathBufferIndex++; 
+		index++;
+	}
+	if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 2, &dirEntry) == -1) {
+		return -1;
+	}
+	readi(dirEntry.ino, inode);
+	return 1;
 }
 
 /* 
