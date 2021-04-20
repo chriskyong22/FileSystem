@@ -23,9 +23,11 @@
 #include "tfs.h"
 
 unsigned long customCeil(double num);
-int readDirectoryBlock (char* datablock, struct dirent *dirEntry, const char *fname, size_t name_len);
 unsigned int getInodeIndexWithinBlock(uint16_t ino);
 unsigned int getInodeBlock(uint16_t ino);
+static void toggleBitInodeBitmap(unsigned int inodeNumber);
+static void toggleBitDataBitmap(unsigned int blockIndex);
+
 #define SUPERBLOCK_BLOCK (0)
 #define INODE_BITMAP_BLOCK (1)
 #define DATA_BITMAP_BLOCK (2)
@@ -313,8 +315,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				dir_inode.vstat.st_size += sizeof(struct dirent);
-				dir_inode.link += 1;
-				dir_inode.vstat.st_nlink += 1;
+				// Have to check if dirent being added is directory type
+				// dir_inode.link += 1;
+				// dir_inode.vstat.st_nlink += 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -326,8 +329,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
 			dir_inode.size += sizeof(struct dirent);
 			dir_inode.vstat.st_size += sizeof(struct dirent);
-			dir_inode.link += 1;
-			dir_inode.vstat.st_nlink += 1;
+			// Have to check if dirent being added is directory type
+			// dir_inode.link += 1;
+			// dir_inode.vstat.st_nlink += 1;
 			writei(dir_inode.ino, &dir_inode);
 			return 1;
 		}
@@ -341,8 +345,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			if (addInIndirectBlock(datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				dir_inode.vstat.st_size += sizeof(struct dirent);
-				dir_inode.link += 1;
-				dir_inode.vstat.st_nlink += 1;
+				// Have to check if dirent being added is directory type
+				// dir_inode.link += 1;
+				// dir_inode.vstat.st_nlink += 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -371,8 +376,9 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			dir_inode.indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
 			dir_inode.size += sizeof(struct dirent);
 			dir_inode.vstat.st_size += sizeof(struct dirent);
-			dir_inode.link += 1;
-			dir_inode.vstat.st_nlink += 1;
+			// Have to check if dirent being added is directory type
+			// dir_inode.link += 1;
+			// dir_inode.vstat.st_nlink += 1;
 			writei(dir_inode.ino, &dir_inode);
 			return 1;
 		}
@@ -427,8 +433,9 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			if (removeInDirectBlock(datablock, fname, name_len, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				dir_inode.link -= 1;
-				dir_inode.vstat.st_nlink -= 1;
+				// Have to check if the directory entry removed is a directory type 
+				// dir_inode.link -= 1;
+				// dir_inode.vstat.st_nlink -= 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -441,8 +448,9 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			if (removeInIndirectBlock(datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				dir_inode.link -= 1;
-				dir_inode.vstat.st_nlink -= 1;
+				// Have to check if the directory entry removed is a directory type 
+				// dir_inode.link -= 1;
+				// dir_inode.vstat.st_nlink -= 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -460,18 +468,29 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
-	int index = 0;
+	
 	readi(ino, inode);
 	struct dirent dirEntry = emptyDirentStruct;
-	char pathBuffer[512] = {0};
+	// In UNIX, max path length is 4096, but we need to include NULL character 
+	// so it will be 4097.
+	char pathBuffer[4097] = {0};
 	int pathBufferIndex = 0;
+	
+	// Assuming path is always the full path so we can skip the first index or '/' 
+	// since that will indicate it is the root directory (e.g. /ilab/users/me/file)
+	int index = 1;
+	
+	// EDGECASE: SEARCHING FOR ROOT DIRECTORY (path = "/")
+	if (path[index] == '\0') {
+		return 1;
+	}
 	while(path[index] != '\0') {
-		if (path[index] == '\\') { 
+		if (path[index] == '/') { 
 			if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 1, &dirEntry) == -1) {
 				return -1;
 			}
 			readi(dirEntry.ino, inode);
-			memset(pathBuffer, '\0', 512);
+			memset(pathBuffer, '\0', 4097);
 			pathBufferIndex = 0;
 		} else {
 			pathBuffer[pathBufferIndex] = path[index];
@@ -491,15 +510,14 @@ void initializeStat(struct inode* inode) {
 	inode->vstat.st_gid = getgid();
 	inode->vstat.st_uid = getuid();
 	if (inode->type == DIRECTORY_TYPE) {
-		inode->vstat.st_mode = S_IFDIR;
+		inode->vstat.st_mode = S_IFDIR | 0755;
 	} else if (inode->type == FILE_TYPE) {
-		inode->vstat.st_mode = S_IFREG;
+		inode->vstat.st_mode = S_IFREG | 0755;
 	} else if (inode->type == HARD_LINK_TYPE) {
-		inode->vstat.st_mode = S_IFREG;
+		inode->vstat.st_mode = S_IFREG | 0755;
 	} else if (inode->type == SYMBIOTIC_LINK_TYPE) {
-		inode->vstat.st_mode = S_IFLNK;
+		inode->vstat.st_mode = S_IFLNK | 0755;
 	}
-	inode->vstat.st_mode |= S_IRWXU;
 	inode->vstat.st_nlink = inode->link;
 	inode->vstat.st_size = inode->size;
 	inode->vstat.st_blksize = BLOCK_SIZE;
@@ -551,9 +569,9 @@ int tfs_mkfs() {
 	// I believe root directory does not have a parent so default link is 1 instead of 2 
 	rootINode.link = 0; 
 	initializeStat(&rootINode);
-	rootINode.vstat.st_mode = S_IFDIR | 0755;
 	writei(inodeNumber, &rootINode);
 	dir_add(rootINode, rootINode.ino, ".", sizeof("."));
+	dir_add(rootINode, rootINode.ino, "..", sizeof(".."));
 	/*
 	uint16_t	ino;				 inode number 
 	uint16_t	valid;				 validity of the inode 
@@ -621,7 +639,13 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-
+	struct inode inode = emptyInodeStruct;
+	
+	// Could change this to return get_node_by_path if I made get_node_by_path return 0 
+	// on success but I like returning 1 on success soooo
+	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+		return -1;
+	}
     return 0;
 }
 
@@ -630,7 +654,44 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
+	struct inode dir_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
+		return -1;
+	}
 
+	char datablock[BLOCK_SIZE] = {0};
+	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
+		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
+			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
+			struct dirent* dirents = (struct dirent*) datablock;
+			for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
+				if (dirents[direntIndex].valid == 1) {
+					filler(buffer, dirents[direntIndex].name, NULL, 0);
+				}
+			}
+		}
+	}
+	
+	int directBlockNumber = 0;
+	char directDataBlock[BLOCK_SIZE] = {0};
+	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
+		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
+			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
+			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+				memcpy(&directBlockNumber, datablock + (directIndex * sizeof(int)), sizeof(int));
+				if (directBlockNumber != 0) { 
+					bio_read(directBlockNumber, directDataBlock);
+					struct dirent* dirents = (struct dirent*) directDataBlock;
+					for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
+						if (dirents[direntIndex].valid == 1) {
+							filler(buffer, dirents[directIndex].name, NULL, 0);
+						}
+					}
+				}
+			}
+		}
+	}
+	
 	return 0;
 }
 
@@ -698,8 +759,14 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-
-	return 0;
+	struct inode inode = emptyInodeStruct;
+	
+	// Could change this to return get_node_by_path if I made get_node_by_path return 0 
+	// on success but I like returning 1 on success soooo
+	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+		return -1;
+	}
+    return 0;
 }
 
 static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -711,7 +778,45 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	// Step 3: copy the correct amount of data from offset to buffer
 
 	// Note: this function should return the amount of bytes you copied to buffer
-	return 0;
+	struct inode file_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		return -1;
+	}
+	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
+	size_t bytesCopied = 0;
+	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
+	char datablock[BLOCK_SIZE] = {0};
+	char indirectblock[BLOCK_SIZE] = {0};
+	int* indirectBlock = (int*) indirectblock;
+	unsigned int previousPointer = 0;
+	while (size > 0) {
+		if (pointer < MAX_DIRECT_POINTERS) {
+			if (file_inode.direct_ptr[pointer] == 0) {
+				break;
+			}
+			bio_read(file_inode.direct_ptr[pointer], datablock);
+		} else {
+			if (file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK] == 0) {
+				break;
+			}
+			if (previousPointer == 0 || (((pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK) != ((previousPointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK))) {
+				bio_read(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
+				if (indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] == 0) {
+					break;
+				}
+				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
+			} 
+			
+		}
+		memcpy(buffer + bytesCopied, datablock + offset, bytesToCopyInBlock);
+		offset = 0;
+		bytesCopied += bytesToCopyInBlock;
+		size -= bytesToCopyInBlock;
+		bytesToCopyInBlock = size < DIRECT_BLOCK_SIZE ? size : DIRECT_BLOCK_SIZE;
+		previousPointer = pointer;
+		pointer++;
+	}
+	return bytesCopied;
 }
 
 static int tfs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
@@ -804,6 +909,19 @@ unsigned int getInodeBlock(uint16_t ino) {
 
 unsigned int getInodeIndexWithinBlock(uint16_t ino) {
 	return ino % MAX_INODE_PER_BLOCK;
+}
+
+static void toggleBitDataBitmap(unsigned int blockIndex) {
+	blockIndex -= superBlock.d_start_blk;
+	char* byteLocation = dataBitmap + (blockIndex / 8);
+	int bitMask = 1 << (blockIndex % 8);
+	(*byteLocation) ^= (bitMask);
+}
+
+static void toggleBitInodeBitmap(unsigned int inodeNumber) {
+	char* byteLocation = inodeBitmap + (inodeNumber / 8);
+	int bitMask = 1 << (inodeNumber % 8);
+	(*byteLocation) ^= (bitMask);
 }
 
 int main(int argc, char *argv[]) {
