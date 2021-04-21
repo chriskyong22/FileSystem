@@ -202,6 +202,7 @@ int findInIndirectBlock (int* indirectBlock, struct dirent* dirEntry, const char
 /* 
  * directory operations
  */
+
 int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *dirent) {
 
   // Step 1: Call readi() to get the inode using ino (inode number of current directory)
@@ -277,6 +278,10 @@ int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirec
 	return -1;
 }
 
+/**
+ * Note, once you pass in dir_inode, the caller dir_inode will be outdated if it is successful
+ * Since we are not passing a pointer (must call readI if want to further modify dir_inode)
+ */
 int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and check each directory entry of dir_inode
@@ -414,6 +419,10 @@ int removeInIndirectBlock (int* indirectBlock, const char *fname, size_t name_le
 	return -1;
 }
 
+/**
+ * Note, once you pass in dir_inode, the caller dir_inode will be outdated if it is successful
+ * Since we are not passing a pointer (must call readI if want to further modify dir_inode)
+ */
 int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and checks each directory entry of dir_inode
@@ -724,9 +733,6 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	}
 	struct inode baseInode = emptyInodeStruct;
 	baseInode.ino = ino;
-	baseInode.type = DIRECTORY_TYPE;
-	baseInode.valid = 1;
-	baseInode.link = 2;
 	char* baseTemp = strdup(path);
 	char* baseName = basename(baseTemp);
 	if(dir_add(dir_inode, baseInode.ino, baseName, strlen(baseName)) == -1) {
@@ -736,12 +742,17 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		return -1;
 	}
 	free(baseTemp);
+		
+	baseInode.type = DIRECTORY_TYPE;
+	baseInode.valid = 1;
+	baseInode.link = 2;
 	initializeStat(&baseInode);
 	if(dir_add(baseInode, baseInode.ino, ".", strlen(".")) == -1) {
 		write(1, "Could not allocate . dirent, ran out of data blocks\n",
 			sizeof("Could not allocate . dirent, ran out of data blocks\n"));
 		return -1;
 	};
+	readi(baseInode.ino, &baseInode);
 	if(dir_add(baseInode, dir_inode.ino, "..", strlen("..")) == -1) {
 		write(1, "Could not allocate .. dirent, ran out of data blocks\n",
 			sizeof("Could not allocate .. dirent, ran out of data blocks\n"));
@@ -751,8 +762,6 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	readi(dir_inode.ino, &dir_inode);
 	dir_inode.vstat.st_nlink += 1;
 	writei(dir_inode.ino, &dir_inode);
-	writei(baseInode.ino, &baseInode);
-
 
 	return 0;
 }
@@ -806,6 +815,10 @@ static int tfs_rmdir(const char *path) {
 		return -1;
 	}
 	free(baseTemp);
+	readi(dir_inode.ino, &dir_inode);
+	dir_inode.link -= 1;
+	dir_inode.vstat.st_nlink -= 1;
+	writei(dir_inode.ino, &dir_inode);
 	return 0;
 }
 
