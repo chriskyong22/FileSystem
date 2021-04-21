@@ -290,6 +290,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Update directory inode
 
 	// Write directory entry
+
 	if (dir_inode.type != DIRECTORY_TYPE) {
 		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
 	}
@@ -707,7 +708,51 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	// Step 5: Update inode for target directory
 
 	// Step 6: Call writei() to write inode to disk
+	struct inode dir_inode = emptyInodeStruct;
+	char* dirTemp = strdup(path);
+	char* dirPath = dirname(dirTemp);
+	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
+		free(dirTemp);
+		return -1;
+	}
+	free(dirTemp);
+	int ino = get_avail_ino();
+	if (ino == -1) {
+		write(1, "Could not allocate an inode for the new directory\n", 
+			sizeof("Could not allocate an inode for the new directory\n"));
+		return -1;
+	}
+	struct inode baseInode = emptyInodeStruct;
+	baseInode.ino = ino;
+	baseInode.type = DIRECTORY_TYPE;
+	baseInode.valid = 1;
+	baseInode.link = 2;
+	char* baseTemp = strdup(path);
+	char* baseName = basename(baseTemp);
+	if(dir_add(dir_inode, baseInode.ino, baseName, strlen(baseName)) == -1) {
+		write(1, "Could find a spot to add an dirent in parent directory\n", 
+			sizeof("Could find a spot to add an dirent in parent directory\n"));
+		free(baseTemp);
+		return -1;
+	}
+	free(baseTemp);
+	initializeStat(&baseInode);
+	if(dir_add(baseInode, baseInode.ino, ".", strlen(".")) == -1) {
+		write(1, "Could not allocate . dirent, ran out of data blocks\n",
+			sizeof("Could not allocate . dirent, ran out of data blocks\n"));
+		return -1;
+	};
+	if(dir_add(baseInode, dir_inode.ino, "..", strlen("..")) == -1) {
+		write(1, "Could not allocate .. dirent, ran out of data blocks\n",
+			sizeof("Could not allocate .. dirent, ran out of data blocks\n"));
+		return -1;
+	};
 	
+	readi(dir_inode.ino, &dir_inode);
+	dir_inode.vstat.st_nlink += 1;
+	writei(dir_inode.ino, &dir_inode);
+	writei(baseInode.ino, &baseInode);
+
 
 	return 0;
 }
@@ -735,14 +780,15 @@ static int tfs_rmdir(const char *path) {
 			sizeof("Trying to remove a non-directory type using rmdir, invalid\n"));
 		return -1;
 	}
-	if (dir_inode.size != 0) {
+	// Every directory will have 2 dirents (. and ..) including root.
+	if (dir_inode.size != (sizeof(struct dirent) * 2)) {
 		write(1, "Cannot remove directory, directory is not empty\n", 
 			sizeof("Cannot remove directory, directory is not empty\n"));
 		return -1;
 	}
+	freeInode(&dir_inode);
 	char* dirTemp = strdup(path);
 	char* dirPath = dirname(dirTemp);
-	freeInode(&dir_inode);
 	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
 		write(1, "BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n",
 			sizeof("BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n"));	
