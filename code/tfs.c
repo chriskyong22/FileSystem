@@ -25,8 +25,9 @@
 unsigned long customCeil(double num);
 unsigned int getInodeIndexWithinBlock(uint16_t ino);
 unsigned int getInodeBlock(uint16_t ino);
-static void toggleBitInodeBitmap(unsigned int inodeNumber);
+static void toggleBitInodeBitmap(uint16_t inodeNumber);
 static void toggleBitDataBitmap(unsigned int blockIndex);
+void freeInode(struct inode* dir_inode);
 
 #define SUPERBLOCK_BLOCK (0)
 #define INODE_BITMAP_BLOCK (1)
@@ -185,13 +186,11 @@ int findInDirectBlock (char* datablock, struct dirent* dirEntry, const char* fna
 	return -1;
 }
 
-int findInIndirectBlock (char* indirectBlock, struct dirent* dirEntry, const char* fname, size_t name_len) {
-	int directBlockNumber = 0;
+int findInIndirectBlock (int* indirectBlock, struct dirent* dirEntry, const char* fname, size_t name_len) {
 	char directDataBlock[BLOCK_SIZE] = {0};
 	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
-		if (directBlockNumber != 0) { 
-			bio_read(directBlockNumber, directDataBlock);
+		if (indirectBlock[directIndex] != 0) { 
+			bio_read(indirectBlock[directIndex], directDataBlock);
 			if (findInDirectBlock(directDataBlock, dirEntry, fname, name_len) == 1) {
 				return 1;
 			}
@@ -232,7 +231,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			if (findInIndirectBlock(datablock, dirent, fname, name_len) == 1) {
+			if (findInIndirectBlock((int*)datablock, dirent, fname, name_len) == 1) {
 				return 1;
 			}
 		}
@@ -255,26 +254,23 @@ int addInDirectBlock(char* datablock, struct dirent* toInsert, int directBlockIn
 	return -1;
 }
 
-int addInIndirectBlock (char* indirectBlock, struct dirent* toInsert, int indirectBlockIndex) {
-	int directBlockNumber = 0;
+int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirectBlockIndex) {
 	char directDataBlock[BLOCK_SIZE] = {0};
 	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
-		if (directBlockNumber != 0) { 
-			bio_read(directBlockNumber, directDataBlock);
-			if (addInDirectBlock(directDataBlock, toInsert, directBlockNumber) == 1) {
+		if (indirectBlock[directIndex] != 0) { 
+			bio_read(indirectBlock[directIndex], directDataBlock);
+			if (addInDirectBlock(directDataBlock, toInsert, indirectBlock[directIndex]) == 1) {
 				return 1;
 			}
 		} else {
 			// Need to allocate new direct block 
-			directBlockNumber = get_avail_blkno();
+			indirectBlock[directIndex] = get_avail_blkno();
 			// Update Indirect Block entries to include this new direct block
-			memcpy(indirectBlock + (directIndex * sizeof(int)), &directBlockNumber, sizeof(int));
 			bio_write(indirectBlockIndex, indirectBlock);
 			// Update the direct block to include the dirent struct at index 0 
 			memset(directDataBlock, 0, BLOCK_SIZE);
 			memcpy(directDataBlock, toInsert, sizeof(struct dirent));
-			bio_write(directBlockNumber, directDataBlock);
+			bio_write(indirectBlock[directIndex], directDataBlock);
 			return 1;
 		}
 	}
@@ -342,7 +338,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			if (addInIndirectBlock(datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
+			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				dir_inode.vstat.st_size += sizeof(struct dirent);
 				// Have to check if dirent being added is directory type
@@ -388,9 +384,14 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 }
 
 int removeInDirectBlock (char* datablock, const char *fname, size_t name_len, int directBlockIndex) {
+	// Should I do fancy remove where if you remove all the dirent entries of 
+	// the direct block, free the direct block in the data bitmap and 
+	// change the directBlockIndex entry to 0 in the indirect block or the direct ptr array?
+	// To change the directBlockIndex entry to be 0, would need to store the pointer to directBlockIndex and can just deference and set it to 0
 	struct dirent* dirents = (struct dirent*) datablock;
 	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
 		if (dirents[direntIndex].valid == 1 && dirents[direntIndex].len == name_len && strcmp(dirents[direntIndex].name, fname) == 0) {
+			//toggleBitInodeBitmap(dirents[direntIndex].ino); Do I have to take care of this or do I assume the caller function will take care of this?
 			dirents[direntIndex].valid = 0;
 			bio_write(directBlockIndex, datablock);
 			return 1;
@@ -399,14 +400,12 @@ int removeInDirectBlock (char* datablock, const char *fname, size_t name_len, in
 	return -1;
 }
 
-int removeInIndirectBlock (char* indirectBlock, const char *fname, size_t name_len, int indirectBlockIndex) {
-	int directBlockNumber = 0;
+int removeInIndirectBlock (int* indirectBlock, const char *fname, size_t name_len, int indirectBlockIndex) {
 	char directDataBlock[BLOCK_SIZE] = {0};
 	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
-		memcpy(&directBlockNumber, indirectBlock + (directIndex * sizeof(int)), sizeof(int));
-		if (directBlockNumber != 0) { 
-			bio_read(directBlockNumber, directDataBlock);
-			if (removeInDirectBlock(directDataBlock, fname, name_len, directBlockNumber) == 1) {
+		if (indirectBlock[directIndex] != 0) { 
+			bio_read(indirectBlock[directIndex], directDataBlock);
+			if (removeInDirectBlock(directDataBlock, fname, name_len, indirectBlock[directIndex]) == 1) {
 				return 1;
 			}
 		}
@@ -445,7 +444,7 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			if (removeInIndirectBlock(datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
+			if (removeInIndirectBlock((int*)datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				dir_inode.vstat.st_size -= sizeof(struct dirent);
 				// Have to check if the directory entry removed is a directory type 
@@ -471,9 +470,8 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	readi(ino, inode);
 	struct dirent dirEntry = emptyDirentStruct;
-	// In UNIX, max path length is 4096, but we need to include NULL character 
-	// so it will be 4097.
-	char pathBuffer[4097] = {0};
+	// In UNIX, max file name length is 255. + 1 for null terminator = 256.
+	char pathBuffer[256] = {0};
 	int pathBufferIndex = 0;
 	
 	// Assuming path is always the full path so we can skip the first index or '/' 
@@ -490,7 +488,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 				return -1;
 			}
 			readi(dirEntry.ino, inode);
-			memset(pathBuffer, '\0', 4097);
+			memset(pathBuffer, '\0', 256);
 			pathBufferIndex = 0;
 		} else {
 			pathBuffer[pathBufferIndex] = path[index];
@@ -727,7 +725,41 @@ static int tfs_rmdir(const char *path) {
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 
 	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
-
+	
+	struct inode dir_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
+		return -1;
+	}
+	if (dir_inode.type != DIRECTORY_TYPE) {
+		write(1, "Trying to remove a non-directory type using rmdir, invalid\n", 
+			sizeof("Trying to remove a non-directory type using rmdir, invalid\n"));
+		return -1;
+	}
+	if (dir_inode.size != 0) {
+		write(1, "Cannot remove directory, directory is not empty\n", 
+			sizeof("Cannot remove directory, directory is not empty\n"));
+		return -1;
+	}
+	char* dirTemp = strdup(path);
+	char* dirPath = dirname(dirTemp);
+	freeInode(&dir_inode);
+	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
+		write(1, "BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n",
+			sizeof("BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n"));	
+		free(dirTemp);
+		return -1;
+	}
+	free(dirTemp);
+	
+	char* baseTemp = strdup(path);
+	char* baseName = basename(baseTemp);
+	if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+		write(1, "BIG ERROR IN RMDIR, did not find the entry in parent directory\n",
+			sizeof("BIG ERROR IN RMDIR, did not find the entry in parent directory\n"));
+		free(baseTemp);
+		return -1;
+	}
+	free(baseTemp);
 	return 0;
 }
 
@@ -873,6 +905,59 @@ static int tfs_utimens(const char *path, const struct timespec tv[2]) {
     return 0;
 }
 
+unsigned long customCeil(double num) {
+	unsigned long floor = (unsigned long) num;
+	return (num == floor) ? floor : floor + 1;
+}
+
+unsigned int getInodeBlock(uint16_t ino) {
+	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
+	return superBlock.i_start_blk + blockNumber;
+}
+
+unsigned int getInodeIndexWithinBlock(uint16_t ino) {
+	return ino % MAX_INODE_PER_BLOCK;
+}
+// Make sure to write to disk afterwards
+static void toggleBitDataBitmap(unsigned int blockIndex) {
+	blockIndex -= superBlock.d_start_blk;
+	char* byteLocation = dataBitmap + (blockIndex / 8);
+	int bitMask = 1 << (blockIndex % 8);
+	(*byteLocation) ^= (bitMask);
+}
+// Make sure to write to disk afterwards
+static void toggleBitInodeBitmap(uint16_t inodeNumber) {
+	char* byteLocation = inodeBitmap + (inodeNumber / 8);
+	int bitMask = 1 << (inodeNumber % 8);
+	(*byteLocation) ^= (bitMask);
+}
+
+void freeInode(struct inode* dir_inode) {
+	// Performing Lazy free (just toggling bitmaps and not actually zeroing out the data)
+	toggleBitInodeBitmap(dir_inode->ino);
+	
+	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
+		if (dir_inode->direct_ptr[directPointerIndex] != 0) {
+			toggleBitDataBitmap(dir_inode->direct_ptr[directPointerIndex]);
+		}
+	}
+	
+	char indirectDataBlockTEMP[BLOCK_SIZE] = {0};
+	int* indirectDataBlock = (int*)indirectDataBlockTEMP;
+	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
+		if (dir_inode->indirect_ptr[indirectPointerIndex] != 0) {
+			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], indirectDataBlock);
+			for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
+				if (indirectDataBlock[directIndex] != 0) { 
+					toggleBitDataBitmap(indirectDataBlock[directIndex]);
+				}
+			}
+			toggleBitDataBitmap(dir_inode->indirect_ptr[indirectPointerIndex]);
+		}
+	}
+	bio_write(superBlock.i_bitmap_blk, inodeBitmap);
+	bio_write(superBlock.d_bitmap_blk, dataBitmap);
+}
 
 static struct fuse_operations tfs_ope = {
 	.init		= tfs_init,
@@ -897,32 +982,6 @@ static struct fuse_operations tfs_ope = {
 	.release	= tfs_release
 };
 
-unsigned long customCeil(double num) {
-	unsigned long floor = (unsigned long) num;
-	return (num == floor) ? floor : floor + 1;
-}
-
-unsigned int getInodeBlock(uint16_t ino) {
-	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
-	return superBlock.i_start_blk + blockNumber;
-}
-
-unsigned int getInodeIndexWithinBlock(uint16_t ino) {
-	return ino % MAX_INODE_PER_BLOCK;
-}
-
-static void toggleBitDataBitmap(unsigned int blockIndex) {
-	blockIndex -= superBlock.d_start_blk;
-	char* byteLocation = dataBitmap + (blockIndex / 8);
-	int bitMask = 1 << (blockIndex % 8);
-	(*byteLocation) ^= (bitMask);
-}
-
-static void toggleBitInodeBitmap(unsigned int inodeNumber) {
-	char* byteLocation = inodeBitmap + (inodeNumber / 8);
-	int bitMask = 1 << (inodeNumber % 8);
-	(*byteLocation) ^= (bitMask);
-}
 
 int main(int argc, char *argv[]) {
 	int fuse_stat;
