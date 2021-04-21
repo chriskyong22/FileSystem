@@ -166,7 +166,7 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 3: Write inode to disk 
 	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
-	char* buffer = malloc(sizeof(BLOCK_SIZE));
+	char* buffer = malloc(BLOCK_SIZE);
 	bio_read(iNode_blockNumber, buffer);
 	memcpy(buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), inode, sizeof(struct inode));
 	bio_write(iNode_blockNumber, buffer); 
@@ -215,7 +215,7 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	readi(ino, &dir_inode);
 
 	if (dir_inode.type != DIRECTORY_TYPE) {
-		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
+		printf("[FIND-E]: Passed in I-Number %u was not type directory but type %d!\n", ino, dir_inode.type); 
 	}
 	
 	char datablock[BLOCK_SIZE] = {0};
@@ -297,7 +297,7 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Write directory entry
 
 	if (dir_inode.type != DIRECTORY_TYPE) {
-		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
+		printf("[ADD-E]: Passed in I-Number %u was not type directory but type %d!\n", dir_inode.ino, dir_inode.type); 
 	}
 	
 	struct dirent toInsertEntry = emptyDirentStruct;
@@ -631,7 +631,6 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	//stbuf->st_mode   = S_IFDIR | 0755;
 	//stbuf->st_nlink  = 2;
 	//time(&stbuf->st_mtime);
-	//return 0;
 	struct inode inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		printf("Entry does not exist\n");
@@ -647,14 +646,12 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-	/*
+
 	struct inode inode = emptyInodeStruct;
-	// Could change this to return get_node_by_path if I made get_node_by_path return 0 
-	// on success but I like returning 1 on success soooo
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		return -1;
 	}
-	*/
+	
     return 0;
 }
 
@@ -663,7 +660,7 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
-	/*
+	
 	struct inode dir_inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
 		return -1;
@@ -701,7 +698,7 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 			}
 		}
 	}
-	*/
+	
 	return 0;
 }
 
@@ -719,7 +716,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	// Step 5: Update inode for target directory
 
 	// Step 6: Call writei() to write inode to disk
-	/*
+	
 	printf("Attempting to create directory %s\n", path);
 	struct inode dir_inode = emptyInodeStruct;
 	char* dirTemp = strdup(path);
@@ -751,6 +748,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	baseInode.valid = 1;
 	baseInode.link = 2;
 	initializeStat(&baseInode);
+	writei(baseInode.ino, &baseInode);
 	if(dir_add(baseInode, baseInode.ino, ".", strlen(".")) == -1) {
 		write(1, "Could not allocate . dirent, ran out of data blocks\n",
 			sizeof("Could not allocate . dirent, ran out of data blocks\n"));
@@ -766,7 +764,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	readi(dir_inode.ino, &dir_inode);
 	dir_inode.vstat.st_nlink += 1;
 	writei(dir_inode.ino, &dir_inode);
-	*/
+	
 	return 0;
 }
 
@@ -783,7 +781,7 @@ static int tfs_rmdir(const char *path) {
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 
 	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
-	/*
+	
 	struct inode dir_inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
 		return -1;
@@ -823,7 +821,7 @@ static int tfs_rmdir(const char *path) {
 	dir_inode.link -= 1;
 	dir_inode.vstat.st_nlink -= 1;
 	writei(dir_inode.ino, &dir_inode);
-	*/
+	
 	return 0;
 }
 
@@ -856,12 +854,11 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 
 	// Step 2: If not find, return -1
 	printf("Looking for %s to open\n", path);
-	return -1;
 	struct inode inode = emptyInodeStruct;
-	
-	// Could change this to return get_node_by_path if I made get_node_by_path return 0 
-	// on success but I like returning 1 on success soooo
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+		return -1;
+	}
+	if (inode.type != FILE_TYPE) {
 		return -1;
 	}
     return 0;
