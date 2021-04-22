@@ -977,6 +977,8 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 			if (file_inode.direct_ptr[pointer] == 0) {
 				file_inode.direct_ptr[pointer] = get_avail_blkno();
 				memset(datablock, 0, BLOCK_SIZE);
+				file_inode.size += bytesToCopyInBlock;
+				file_inode.vstat.st_size += bytesToCopyInBlock;
 			} else {
 				bio_read(file_inode.direct_ptr[pointer], datablock);
 			}
@@ -994,6 +996,8 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 				indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] = get_avail_blkno();
 				bio_write(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
 				memset(datablock, 0, BLOCK_SIZE);
+				file_inode.size += bytesToCopyInBlock;
+				file_inode.vstat.st_size += bytesToCopyInBlock;
 			} else {
 				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
 			}
@@ -1008,6 +1012,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		previousPointer = pointer;
 		pointer++;
 	}
+	writei(file_inode.ino, &file_inode);
 	return bytesWritten;
 }
 
