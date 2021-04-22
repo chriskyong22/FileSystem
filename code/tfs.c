@@ -478,7 +478,6 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
 	
-	printf("ino number: %u\n", ino);
 	readi(ino, inode);
 	struct dirent dirEntry = emptyDirentStruct;
 	
@@ -497,7 +496,8 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	while(path[index] != '\0') {
 		if (path[index] == '/') { 
-			if (dir_find(inode->ino, pathBuffer, pathBufferIndex + 1, &dirEntry) == -1) {
+			if (dir_find(inode->ino, pathBuffer, pathBufferIndex, &dirEntry) == -1) {
+				printf("[D-GNBP]: Failed to find %s with length %u\n", pathBuffer, pathBufferIndex);
 				return -1;
 			}
 			readi(dirEntry.ino, inode);
@@ -510,6 +510,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 		index++;
 	}
 	if (dir_find(inode->ino, pathBuffer, pathBufferIndex, &dirEntry) == -1) {
+		printf("[D-GNBP]: Failed to find %s with length %u\n", pathBuffer, pathBufferIndex);
 		return -1;
 	}
 	readi(dirEntry.ino, inode);
@@ -647,14 +648,16 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 
 	// Step 2: If not find, return -1
 
-	struct inode inode = emptyInodeStruct;
-	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+	struct inode dir_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
 		return -1;
 	}
-	if (inode.type != DIRECTORY_TYPE) {
-		printf("[D-OPENDIR]: Found %s path, but it is not a directory type but type %u", path, inode.type);
+	if (dir_inode.type != DIRECTORY_TYPE) {
+		printf("[D-OPENDIR]: Found %s path, but it is not a directory type but type %u", path, dir_inode.type);
 		return -1;
 	}
+	time(&(dir_inode.vstat.st_atime));
+	writei(dir_inode.ino, &dir_inode);
     return 0;
 }
 
@@ -701,7 +704,8 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 			}
 		}
 	}
-	
+	time(&(dir_inode.vstat.st_atime));
+	writei(dir_inode.ino, &dir_inode);
 	return 0;
 }
 
@@ -766,6 +770,8 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 
 	readi(dir_inode.ino, &dir_inode);
 	dir_inode.vstat.st_nlink += 1;
+	time(&(dir_inode.vstat.st_mtime));
+	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
 	
 	return 0;
@@ -823,6 +829,8 @@ static int tfs_rmdir(const char *path) {
 	readi(dir_inode.ino, &dir_inode);
 	dir_inode.link -= 1;
 	dir_inode.vstat.st_nlink -= 1;
+	time(&(dir_inode.vstat.st_mtime));
+	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
 	
 	return 0;
@@ -882,7 +890,7 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-	printf("[File] Looking for %s to open\n", path);
+	printf("[D-OPENFile] Looking for %s to open\n", path);
 	struct inode inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		return -1;
@@ -910,6 +918,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
 		return -1;
 	}
+	printf("[D-READFILE] Reading %lu bytes at offset %lu: %s\n", size, offset, buffer);
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesCopied = 0;
 	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
@@ -943,6 +952,8 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		previousPointer = pointer;
 		pointer++;
 	}
+	time(&(file_inode.vstat.st_atime));
+	writei(file_inode.ino, &file_inode);
 	return bytesCopied;
 }
 
@@ -961,9 +972,15 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		return -1;
 	}
 	if (file_inode.type != FILE_TYPE) {
-		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		printf("[D-WRITEFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
 		return -1;
 	}
+	if (offset > file_inode.size) {
+		printf("[D-WRITEFILE]: Offset %lu is out of bounds %u of file size\n", offset, file_inode.size);
+		return -1;
+	}
+	off_t copyOffset = offset;
+	printf("[D-WRITEFILE] Writing %lu bytes at offset %lu: %s\n", size, offset, buffer);
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesWritten = 0;
 	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
@@ -977,8 +994,6 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 			if (file_inode.direct_ptr[pointer] == 0) {
 				file_inode.direct_ptr[pointer] = get_avail_blkno();
 				memset(datablock, 0, BLOCK_SIZE);
-				file_inode.size += bytesToCopyInBlock;
-				file_inode.vstat.st_size += bytesToCopyInBlock;
 			} else {
 				bio_read(file_inode.direct_ptr[pointer], datablock);
 			}
@@ -996,8 +1011,6 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 				indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] = get_avail_blkno();
 				bio_write(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
 				memset(datablock, 0, BLOCK_SIZE);
-				file_inode.size += bytesToCopyInBlock;
-				file_inode.vstat.st_size += bytesToCopyInBlock;
 			} else {
 				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
 			}
@@ -1012,6 +1025,11 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		previousPointer = pointer;
 		pointer++;
 	}
+	printf("Bytes Written: %lu, File Size %u, Offset %lu\n", bytesWritten, file_inode.size, copyOffset);
+	file_inode.size += bytesWritten < (file_inode.size - copyOffset) ? 0 : bytesWritten - (file_inode.size - copyOffset);
+	file_inode.vstat.st_size = file_inode.size;
+	time(&(file_inode.vstat.st_mtime));
+	time(&(file_inode.vstat.st_atime));
 	writei(file_inode.ino, &file_inode);
 	return bytesWritten;
 }
@@ -1034,14 +1052,14 @@ static int tfs_unlink(const char *path) {
 		return -1;
 	}
 	if (file_inode.type != FILE_TYPE) {
-		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		printf("[D-UNLINK]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
 		return -1;
 	}
 	char* dirTemp = strdup(path);
 	char* dirPath = dirname(dirTemp);
 	struct inode dir_inode = emptyInodeStruct;
 	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
-		printf("[D-READFILE]: Attempting to retrieve the parent directory for file but failed\n");
+		printf("[D-UNLINK]: Attempting to retrieve the parent directory for file but failed\n");
 		free(dirTemp);
 		return -1;
 	}
