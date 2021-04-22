@@ -150,7 +150,7 @@ int readi(uint16_t ino, struct inode *inode) {
 	
 	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
-	printf("Offset %lu\n", ino % MAX_INODE_PER_BLOCK);
+	printf("Ino Number %u | Offset %lu\n", ino, ino % MAX_INODE_PER_BLOCK);
 	char buffer[BLOCK_SIZE];
 	bio_read(iNode_blockNumber, buffer); 
 	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), sizeof(struct inode));
@@ -651,7 +651,10 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		return -1;
 	}
-	
+	if (inode.type != DIRECTORY_TYPE) {
+		printf("[D-OPENDIR]: Found %s path, but it is not a directory type but type %u", path, inode.type);
+		return -1;
+	}
     return 0;
 }
 
@@ -844,7 +847,33 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	// Step 5: Update inode for target file
 
 	// Step 6: Call writei() to write inode to disk
-
+	struct inode dir_inode = emptyInodeStruct;
+	char* dirTemp = strdup(path);
+	char* dirPath = dirname(dirTemp);
+	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
+		free(dirTemp);
+		return -1;
+	}
+	free(dirTemp);
+	int ino = get_avail_ino();
+	if (ino == -1) {
+		printf("[D-CREATE]: Ran out of inodes\n");
+		return -1;
+	}
+	char* baseTemp = strdup(path);
+	char* baseName = basename(baseTemp);
+	if(dir_add(dir_inode, ino, baseName, strlen(baseName)) == -1) {
+		printf("[D-CREATE]: Failed to add the file to the parent directory");
+		return -1;
+	}
+	free(baseTemp);
+	struct inode fileInode = emptyInodeStruct;
+	fileInode.ino = ino;
+	fileInode.type = FILE_TYPE;
+	fileInode.valid = 1;
+	fileInode.link = 1;
+	initializeStat(&fileInode);
+	writei(fileInode.ino, &fileInode);
 	return 0;
 }
 
@@ -853,7 +882,7 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	// Step 1: Call get_node_by_path() to get inode from path
 
 	// Step 2: If not find, return -1
-	printf("Looking for %s to open\n", path);
+	printf("[File] Looking for %s to open\n", path);
 	struct inode inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		return -1;
@@ -896,14 +925,13 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 			}
 			if (previousPointer == 0 || (((pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK) != ((previousPointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK))) {
 				bio_read(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
-				if (indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] == 0) {
-					break;
-				}
-				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
-			} 
-			
+			}
+			if (indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] == 0) {
+				break;
+			}
+			bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock); 
 		}
-		memcpy(buffer + bytesCopied, datablock + offset, bytesToCopyInBlock);
+		memcpy(buffer + bytesCopied, datablock + (offset % DIRECT_BLOCK_SIZE), bytesToCopyInBlock);
 		offset = 0;
 		bytesCopied += bytesToCopyInBlock;
 		size -= bytesToCopyInBlock;
@@ -922,9 +950,57 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	// Step 3: Write the correct amount of data from offset to disk
 
 	// Step 4: Update the inode info and write it to disk
-
+	
 	// Note: this function should return the amount of bytes you write to disk
-	return size;
+	struct inode file_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		return -1;
+	}
+	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
+	size_t bytesWritten = 0;
+	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
+	char datablock[BLOCK_SIZE] = {0};
+	char indirectblock[BLOCK_SIZE] = {0};
+	int* indirectBlock = (int*) indirectblock;
+	unsigned int previousPointer = 0;
+	unsigned int dataBlockIndex = 0;
+	while (size > 0) {
+		if (pointer < MAX_DIRECT_POINTERS) {
+			if (file_inode.direct_ptr[pointer] == 0) {
+				file_inode.direct_ptr[pointer] = get_avail_blkno();
+				memset(datablock, 0, BLOCK_SIZE);
+			} else {
+				bio_read(file_inode.direct_ptr[pointer], datablock);
+			}
+			dataBlockIndex = file_inode.direct_ptr[pointer];
+		} else {
+			if (file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK] == 0) {
+				file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK] = get_avail_blkno();
+				memset(indirectBlock, 0, BLOCK_SIZE);
+			} else { 
+				if (previousPointer == 0 || (((pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK) != ((previousPointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK))) {
+					bio_read(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
+				}
+			}
+			if (indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] == 0) {
+				indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] = get_avail_blkno();
+				bio_write(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
+				memset(datablock, 0, BLOCK_SIZE);
+			} else {
+				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
+			}
+			dataBlockIndex = indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK]; 
+		}
+		memcpy(datablock + (offset % DIRECT_BLOCK_SIZE), buffer + bytesWritten, bytesToCopyInBlock);
+		bio_write(dataBlockIndex, datablock);
+		offset = 0;
+		bytesWritten += bytesToCopyInBlock;
+		size -= bytesToCopyInBlock;
+		bytesToCopyInBlock = size < DIRECT_BLOCK_SIZE ? size : DIRECT_BLOCK_SIZE;
+		previousPointer = pointer;
+		pointer++;
+	}
+	return bytesWritten;
 }
 
 static int tfs_unlink(const char *path) {
