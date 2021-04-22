@@ -906,6 +906,10 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
 		return -1;
 	}
+	if (file_inode.type != FILE_TYPE) {
+		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		return -1;
+	}
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesCopied = 0;
 	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
@@ -954,6 +958,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	// Note: this function should return the amount of bytes you write to disk
 	struct inode file_inode = emptyInodeStruct;
 	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		return -1;
+	}
+	if (file_inode.type != FILE_TYPE) {
+		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
 		return -1;
 	}
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
@@ -1016,7 +1024,31 @@ static int tfs_unlink(const char *path) {
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 
 	// Step 6: Call dir_remove() to remove directory entry of target file in its parent directory
-
+	struct inode file_inode = emptyInodeStruct;
+	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		return -1;
+	}
+	if (file_inode.type != FILE_TYPE) {
+		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		return -1;
+	}
+	char* dirTemp = strdup(path);
+	char* dirPath = dirname(dirTemp);
+	struct inode dir_inode = emptyInodeStruct;
+	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
+		printf("[D-READFILE]: Attempting to retrieve the parent directory for file but failed\n");
+		free(dirTemp);
+		return -1;
+	}
+	free(dirTemp);
+	char* baseTemp = strdup(path);
+	char* baseName = basename(baseTemp);
+	if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+		free(baseTemp);
+		return -1;
+	}
+	free(baseTemp);
+	freeInode(&file_inode);
 	return 0;
 }
 
