@@ -43,7 +43,7 @@ void freeInode(struct inode* dir_inode);
 #define MAX_DIRECT_SIZE (MAX_DIRECT_POINTERS * DIRECT_BLOCK_SIZE)
 #define INDIRECT_BLOCK_SIZE (BLOCK_SIZE * BLOCK_SIZE)
 #define MAX_INDIRECT_SIZE (MAX_INDIRECT_POINTERS * INDIRECT_BLOCK_SIZE)
-#define MAX_INODE_PER_BLOCK ((BLOCK_SIZE) / sizeof(struct inode))
+#define MAX_INODES_PER_BLOCK ((BLOCK_SIZE) / sizeof(struct inode))
 #define MAX_DIRENT_PER_BLOCK ((BLOCK_SIZE) / sizeof(struct dirent))
 #define CHAR_IN_BITS (sizeof(char) * 8)
 #define BYTE_MASK ((1 << CHAR_IN_BITS) - 1)
@@ -64,6 +64,10 @@ uint16_t rootInodeNumber;
 
 /* 
  * Get available inode number from bitmap
+ * Note whenever you call this function, make sure you don't retrieve the ino 
+ * struct but create a new ino struct that is zeroed out and then writei 
+ * afterwards (so if you call this function, only use writei and never readi)
+ * (if you readi, you will be grabbing the old inode struct that was stored there)
  */
 int get_avail_ino() {
 
@@ -79,10 +83,6 @@ int get_avail_ino() {
 		// if there is a free inode within a char, the char will not equal 255. 
 		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
 			for(int bitIndex = 0; bitIndex < CHAR_IN_BITS; bitIndex++) {
-			/*
-				bitMask values ~ 0b1 = 1, 0b10 = 2, 0b100 = 4, 0b1000 = 8
-				0b10000 = 16, 0b100000 = 32, 0b1000000 = 64, 0b10000000 = 128
-			*/
 				int bitMask = 1 << bitIndex;
 				if(((*byteLocation) & bitMask) == 0) {
 					// The iNode Number is (byteIndex * 8) + bitIndex.
@@ -95,12 +95,14 @@ int get_avail_ino() {
 			}
 		}
 	}
-	
 	return -1;
 }
 
 /* 
  * Get available data block number from bitmap
+ * Note whenever you call this function, make sure to never bio_read afterwards
+ * but create a new buffer that is zeroed out and then bio_write afterwards 
+ * (if you bio_read, you will be grabbing the old data that was stored there)
  */
 int get_avail_blkno() {
 
@@ -116,16 +118,12 @@ int get_avail_blkno() {
 		// if there is a free datablock within a char, the char will not equal 255. 
 		if (((*byteLocation) & BYTE_MASK) != BYTE_MASK) {
 			for(int bitIndex = 0; bitIndex < CHAR_IN_BITS; bitIndex++) {
-			/*
-				bitMask values ~ 0b1 = 1, 0b10 = 2, 0b100 = 4, 0b1000 = 8
-				0b10000 = 16, 0b100000 = 32, 0b1000000 = 64, 0b10000000 = 128
-			*/
 				int bitMask = 1 << bitIndex;
 				if(((*byteLocation) & bitMask) == 0) {
 					// The data Number is (byteIndex * 8) + bitIndex.
-					// Since each byte hold 8 inodes, then bitIndex
+					// Since each byte hold 8 datablocks, then bitIndex
 					// indicates a datablock within a char and have to add the
-					// starting region of the data block.
+					// starting datablock region.
 					(*byteLocation) |= bitMask;
 					bio_write(superBlock.d_bitmap_blk, dataBitmap);
 					return superBlock.d_start_blk + ((byteIndex * 8) + bitIndex);
@@ -133,12 +131,16 @@ int get_avail_blkno() {
 			}
 		}
 	}
-	
 	return -1;
 }
 
 /* 
  * inode operations
+ */
+/*
+ * Note, this function should never be used to retrieve an ino struct of the returned ino from  
+ * get_avail_ino. Instead create a new inode struct and zero it out and then 
+ * writei afterwards. (otherwise you will be retrieving an old inode struct data)
  */
 int readi(uint16_t ino, struct inode *inode) {
 
@@ -148,12 +150,12 @@ int readi(uint16_t ino, struct inode *inode) {
 
   // Step 3: Read the block from disk and then copy into inode structure
 	
-	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
-	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
-	printf("Ino Number %u | Offset %lu\n", ino, ino % MAX_INODE_PER_BLOCK);
+	unsigned int blockNumber = ino / MAX_INODES_PER_BLOCK;
+	unsigned int inodeBlockNumber = superBlock.i_start_blk + blockNumber;
+	printf("Ino Number %u | Offset %lu\n", ino, ino % MAX_INODES_PER_BLOCK);
 	char buffer[BLOCK_SIZE];
-	bio_read(iNode_blockNumber, buffer); 
-	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), sizeof(struct inode));
+	bio_read(inodeBlockNumber, buffer); 
+	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODES_PER_BLOCK)), sizeof(struct inode));
 	return 0;
 }
 
@@ -164,11 +166,11 @@ int writei(uint16_t ino, struct inode *inode) {
 	// Step 2: Get the offset in the block where this inode resides on disk
 
 	// Step 3: Write inode to disk 
-	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
+	unsigned int blockNumber = ino / MAX_INODES_PER_BLOCK;
 	int iNode_blockNumber = superBlock.i_start_blk + blockNumber;
 	char* buffer = malloc(BLOCK_SIZE);
 	bio_read(iNode_blockNumber, buffer);
-	memcpy(buffer + (sizeof(struct inode) * (ino % MAX_INODE_PER_BLOCK)), inode, sizeof(struct inode));
+	memcpy(buffer + (sizeof(struct inode) * (ino % MAX_INODES_PER_BLOCK)), inode, sizeof(struct inode));
 	bio_write(iNode_blockNumber, buffer); 
 	free(buffer);
 	
@@ -176,9 +178,10 @@ int writei(uint16_t ino, struct inode *inode) {
 }
 
 int findInDirectBlock (char* datablock, struct dirent* dirEntry, const char* fname, size_t name_len) {
+	struct dirent* dirents = (struct dirent*) datablock;
 	for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
-		memcpy(dirEntry, datablock + (direntIndex * (sizeof(struct dirent))), sizeof(struct dirent));
-		if (dirEntry->valid == 1 && name_len == dirEntry->len && strcmp(dirEntry->name, fname) == 0) {
+		if (dirents[direntIndex].valid == 1 && dirents[direntIndex].len == name_len && strcmp(dirents[direntIndex].name, fname) == 0) {
+			memcpy(dirEntry, datablock + (direntIndex * (sizeof(struct dirent))), sizeof(struct dirent));
 			return 1;
 		}
 	}
@@ -317,9 +320,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				dir_inode.vstat.st_size += sizeof(struct dirent);
-				// Have to check if dirent being added is directory type
-				// dir_inode.link += 1;
-				// dir_inode.vstat.st_nlink += 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -331,9 +331,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
 			dir_inode.size += sizeof(struct dirent);
 			dir_inode.vstat.st_size += sizeof(struct dirent);
-			// Have to check if dirent being added is directory type
-			// dir_inode.link += 1;
-			// dir_inode.vstat.st_nlink += 1;
 			writei(dir_inode.ino, &dir_inode);
 			return 1;
 		}
@@ -347,9 +344,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size += sizeof(struct dirent);
 				dir_inode.vstat.st_size += sizeof(struct dirent);
-				// Have to check if dirent being added is directory type
-				// dir_inode.link += 1;
-				// dir_inode.vstat.st_nlink += 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -378,9 +372,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			dir_inode.indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
 			dir_inode.size += sizeof(struct dirent);
 			dir_inode.vstat.st_size += sizeof(struct dirent);
-			// Have to check if dirent being added is directory type
-			// dir_inode.link += 1;
-			// dir_inode.vstat.st_nlink += 1;
 			writei(dir_inode.ino, &dir_inode);
 			return 1;
 		}
@@ -442,9 +433,6 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			if (removeInDirectBlock(datablock, fname, name_len, dir_inode.direct_ptr[directPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				// Have to check if the directory entry removed is a directory type 
-				// dir_inode.link -= 1;
-				// dir_inode.vstat.st_nlink -= 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -457,9 +445,6 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			if (removeInIndirectBlock((int*)datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode.size -= sizeof(struct dirent);
 				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				// Have to check if the directory entry removed is a directory type 
-				// dir_inode.link -= 1;
-				// dir_inode.vstat.st_nlink -= 1;
 				writei(dir_inode.ino, &dir_inode);
 				return 1;
 			}
@@ -523,10 +508,15 @@ void initializeStat(struct inode* inode) {
 	inode->vstat.st_uid = getuid();
 	if (inode->type == DIRECTORY_TYPE) {
 		inode->vstat.st_mode = S_IFDIR | 0755;
+		inode->link = 2;
 	} else if (inode->type == FILE_TYPE) {
 		inode->vstat.st_mode = S_IFREG | 0755;
+		inode->link = 1;
 	} else if (inode->type == HARD_LINK_TYPE) {
 		inode->vstat.st_mode = S_IFREG | 0755;
+		// Creating another reference to the inode 
+		// Should this function ever be called for hard and symbiotic links? 
+		// Probably not since the inodes SHOULD be already initialized
 	} else if (inode->type == SYMBIOTIC_LINK_TYPE) {
 		inode->vstat.st_mode = S_IFLNK | 0755;
 	}
@@ -564,7 +554,7 @@ int tfs_mkfs() {
 	superBlock.d_bitmap_blk = DATA_BITMAP_BLOCK;
 	superBlock.i_start_blk = INODE_REGION_BLOCK;
 	// INode Regions starts blockIndex 3 and spans across MAX_INUM / (BLOCK_SIZE/ INODE SIZE)
-	superBlock.d_start_blk = INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / MAX_INODE_PER_BLOCK);
+	superBlock.d_start_blk = INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / MAX_INODES_PER_BLOCK);
 	
 	char* superblockBuffer = calloc(1, BLOCK_SIZE);
 	memcpy(superblockBuffer, &superBlock, sizeof(struct superblock));
@@ -577,7 +567,6 @@ int tfs_mkfs() {
 	rootInode.ino = inodeNumber;
 	rootInode.valid = 1; 
 	rootInode.type = DIRECTORY_TYPE;
-	rootInode.link = 2; 
 	initializeStat(&rootInode);
 	dir_add(rootInode, rootInode.ino, ".", strlen("."));
 	readi(rootInode.ino, &rootInode);
@@ -697,7 +686,7 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 					struct dirent* dirents = (struct dirent*) directDataBlock;
 					for(int direntIndex = 0; direntIndex < MAX_DIRENT_PER_BLOCK; direntIndex++) {
 						if (dirents[direntIndex].valid == 1) {
-							filler(buffer, dirents[directIndex].name, NULL, 0);
+							filler(buffer, dirents[direntIndex].name, NULL, 0);
 						}
 					}
 				}
@@ -735,8 +724,8 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	free(dirTemp);
 	int ino = get_avail_ino();
 	if (ino == -1) {
-		write(1, "Could not allocate an inode for the new directory\n", 
-			sizeof("Could not allocate an inode for the new directory\n"));
+		write(1, "[TFS_MKDIR] Could not allocate an inode for the new directory\n", 
+			sizeof("[TFS_MKDIR] Could not allocate an inode for the new directory\n"));
 		return -1;
 	}
 	struct inode baseInode = emptyInodeStruct;
@@ -753,7 +742,6 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		
 	baseInode.type = DIRECTORY_TYPE;
 	baseInode.valid = 1;
-	baseInode.link = 2;
 	initializeStat(&baseInode);
 	writei(baseInode.ino, &baseInode);
 	if(dir_add(baseInode, baseInode.ino, ".", strlen(".")) == -1) {
@@ -872,6 +860,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	char* baseName = basename(baseTemp);
 	if(dir_add(dir_inode, ino, baseName, strlen(baseName)) == -1) {
 		printf("[D-CREATE]: Failed to add the file to the parent directory");
+		free(baseTemp);
 		return -1;
 	}
 	free(baseTemp);
@@ -879,7 +868,6 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	fileInode.ino = ino;
 	fileInode.type = FILE_TYPE;
 	fileInode.valid = 1;
-	fileInode.link = 1;
 	initializeStat(&fileInode);
 	writei(fileInode.ino, &fileInode);
 	return 0;
@@ -1105,12 +1093,12 @@ unsigned long customCeil(double num) {
 }
 
 unsigned int getInodeBlock(uint16_t ino) {
-	unsigned int blockNumber = ino / MAX_INODE_PER_BLOCK;
+	unsigned int blockNumber = ino / MAX_INODES_PER_BLOCK;
 	return superBlock.i_start_blk + blockNumber;
 }
 
 unsigned int getInodeIndexWithinBlock(uint16_t ino) {
-	return ino % MAX_INODE_PER_BLOCK;
+	return ino % MAX_INODES_PER_BLOCK;
 }
 // Make sure to write to disk afterwards
 static void toggleBitDataBitmap(unsigned int blockIndex) {
