@@ -285,11 +285,7 @@ int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirec
 	return -1;
 }
 
-/**
- * Note, once you pass in dir_inode, the caller dir_inode will be outdated if it is successful
- * Since we are not passing a pointer (must call readI if want to further modify dir_inode)
- */
-int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
+int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and check each directory entry of dir_inode
 	
@@ -303,12 +299,12 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 
 	// Write directory entry
 
-	if (dir_inode.type != DIRECTORY_TYPE) {
-		printf("[ADD-E]: Passed in I-Number %u was not type directory but type %d!\n", dir_inode.ino, dir_inode.type); 
+	if (dir_inode->type != DIRECTORY_TYPE) {
+		printf("[ADD-E]: Passed in I-Number %u was not type directory but type %d!\n", dir_inode->ino, dir_inode->type); 
 	}
 	
 	struct dirent toInsertEntry = emptyDirentStruct;
-	if (dir_find(dir_inode.ino, fname, name_len, &toInsertEntry) == 1) {
+	if (dir_find(dir_inode->ino, fname, name_len, &toInsertEntry) == 1) {
 		return -1;
 	}
 	
@@ -320,41 +316,41 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	// Check Direct Blocks
 	char datablock[BLOCK_SIZE] = {0};
 	for (int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
-		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
-			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
-			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode.direct_ptr[directPointerIndex]) == 1) {
-				dir_inode.size += sizeof(struct dirent);
-				dir_inode.vstat.st_size += sizeof(struct dirent);
-				writei(dir_inode.ino, &dir_inode);
+		if (dir_inode->direct_ptr[directPointerIndex] != 0) {
+			bio_read(dir_inode->direct_ptr[directPointerIndex], datablock);
+			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode->direct_ptr[directPointerIndex]) == 1) {
+				dir_inode->size += sizeof(struct dirent);
+				dir_inode->vstat.st_size += sizeof(struct dirent);
+				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
 		} else {
 			// need to allocate a new data block 
-			dir_inode.direct_ptr[directPointerIndex] = get_avail_blkno();
-			if (dir_inode.direct_ptr[directPointerIndex] == -1) {
+			dir_inode->direct_ptr[directPointerIndex] = get_avail_blkno();
+			if (dir_inode->direct_ptr[directPointerIndex] == -1) {
 				printf("[W-ADD]: Could not find a free data block to use\n");
 				return -1;
 			}
 			// Fill in the dirent entry
 			memset(datablock, 0, BLOCK_SIZE);
 			memcpy(datablock, &toInsertEntry, sizeof(struct dirent));
-			bio_write(dir_inode.direct_ptr[directPointerIndex], datablock);
+			bio_write(dir_inode->direct_ptr[directPointerIndex], datablock);
 			// Update the directory inode (with the new data block and size)
-			dir_inode.size += sizeof(struct dirent);
-			dir_inode.vstat.st_size += sizeof(struct dirent);
-			writei(dir_inode.ino, &dir_inode);
+			dir_inode->size += sizeof(struct dirent);
+			dir_inode->vstat.st_size += sizeof(struct dirent);
+			writei(dir_inode->ino, dir_inode);
 			return 1;
 		}
 	}
 	
 	// Check indirect blocks
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
-		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
-			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
-				dir_inode.size += sizeof(struct dirent);
-				dir_inode.vstat.st_size += sizeof(struct dirent);
-				writei(dir_inode.ino, &dir_inode);
+		if (dir_inode->indirect_ptr[indirectPointerIndex] != 0) {
+			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], datablock);
+			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode->indirect_ptr[indirectPointerIndex]) == 1) {
+				dir_inode->size += sizeof(struct dirent);
+				dir_inode->vstat.st_size += sizeof(struct dirent);
+				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
 		} else {
@@ -384,10 +380,10 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 			bio_write(directBlockIndex, datablock);
 			
 			// Update the inode to include the new indirect block and the new size
-			dir_inode.indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
-			dir_inode.size += sizeof(struct dirent);
-			dir_inode.vstat.st_size += sizeof(struct dirent);
-			writei(dir_inode.ino, &dir_inode);
+			dir_inode->indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
+			dir_inode->size += sizeof(struct dirent);
+			dir_inode->vstat.st_size += sizeof(struct dirent);
+			writei(dir_inode->ino, dir_inode);
 			return 1;
 		}
 	}
@@ -424,11 +420,7 @@ int removeInIndirectBlock (int* indirectBlock, const char *fname, size_t name_le
 	return -1;
 }
 
-/**
- * Note, once you pass in dir_inode, the caller dir_inode will be outdated if it is successful
- * Since we are not passing a pointer (must call readI if want to further modify dir_inode)
- */
-int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
+int dir_remove(struct inode* dir_inode, const char *fname, size_t name_len) {
 
 	// Step 1: Read dir_inode's data block and checks each directory entry of dir_inode
 	
@@ -436,19 +428,19 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 
 	// Step 3: If exist, then remove it from dir_inode's data block and write to disk
 
-	if (dir_inode.type != DIRECTORY_TYPE) {
-		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode.type); 
+	if (dir_inode->type != DIRECTORY_TYPE) {
+		printf("[E]: Passed in I-Number was not type directory but type %d!\n", dir_inode->type); 
 	}
 	
 	char datablock[BLOCK_SIZE] = {0};
 	// Check Direct Blocks
 	for(int directPointerIndex = 0; directPointerIndex < MAX_DIRECT_POINTERS; directPointerIndex++) {
-		if (dir_inode.direct_ptr[directPointerIndex] != 0) {
-			bio_read(dir_inode.direct_ptr[directPointerIndex], datablock);
-			if (removeInDirectBlock(datablock, fname, name_len, dir_inode.direct_ptr[directPointerIndex]) == 1) {
-				dir_inode.size -= sizeof(struct dirent);
-				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				writei(dir_inode.ino, &dir_inode);
+		if (dir_inode->direct_ptr[directPointerIndex] != 0) {
+			bio_read(dir_inode->direct_ptr[directPointerIndex], datablock);
+			if (removeInDirectBlock(datablock, fname, name_len, dir_inode->direct_ptr[directPointerIndex]) == 1) {
+				dir_inode->size -= sizeof(struct dirent);
+				dir_inode->vstat.st_size -= sizeof(struct dirent);
+				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
 		}
@@ -456,12 +448,12 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 	
 	// Check Indirect Blocks
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
-		if (dir_inode.indirect_ptr[indirectPointerIndex] != 0) {
-			bio_read(dir_inode.indirect_ptr[indirectPointerIndex], datablock);
-			if (removeInIndirectBlock((int*)datablock, fname, name_len, dir_inode.indirect_ptr[indirectPointerIndex]) == 1) {
-				dir_inode.size -= sizeof(struct dirent);
-				dir_inode.vstat.st_size -= sizeof(struct dirent);
-				writei(dir_inode.ino, &dir_inode);
+		if (dir_inode->indirect_ptr[indirectPointerIndex] != 0) {
+			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], datablock);
+			if (removeInIndirectBlock((int*)datablock, fname, name_len, dir_inode->indirect_ptr[indirectPointerIndex]) == 1) {
+				dir_inode->size -= sizeof(struct dirent);
+				dir_inode->vstat.st_size -= sizeof(struct dirent);
+				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
 		}
@@ -599,14 +591,14 @@ int tfs_mkfs() {
 		int validBits = (superBlock.max_inum + 1) % 8;
 		int validBitsMask = (1 << validBits) - 1;
 		char setMask = BYTE_MASK ^ validBitsMask;
-		*(inodeBitmap + (PHYSICAL_BITMAP_SIZE - 1)) = setMask;
+		inodeBitmap[(superBlock.max_inum + 1) / 8] = setMask;
 	}
 	
 	if ((superBlock.max_dnum + 1) % 8 != 0) { 
 		int validBits = (superBlock.max_dnum + 1) % 8;
 		int validBitsMask = (1 << validBits) - 1;
 		char setMask = BYTE_MASK ^ validBitsMask;
-		*(dataBitmap + (PHYSICAL_BITMAP_SIZE - 1)) = setMask;
+		dataBitmap[(superBlock.max_dnum + 1) / 8] = setMask;
 	}
 	
 	struct inode rootInode = emptyInodeStruct;
@@ -619,11 +611,11 @@ int tfs_mkfs() {
 	rootInode.type = DIRECTORY_TYPE;
 	initializeStat(&rootInode);
 	writei(rootInode.ino, &rootInode);
-	if (dir_add(rootInode, rootInode.ino, ".", strlen(".")) == -1) {
+	if (dir_add(&rootInode, rootInode.ino, ".", strlen(".")) == -1) {
 		perror("[E]: Something really went wrong with initialize of the disk\n");
 	}
-	readi(rootInode.ino, &rootInode);
-	if (dir_add(rootInode, rootInode.ino, "..", strlen("..")) == -1) {
+	
+	if (dir_add(&rootInode, rootInode.ino, "..", strlen("..")) == -1) {
 		perror("[E]: Something really went wrong with initialize of the disk\n");
 	}
 	return 0;
@@ -788,7 +780,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	
 	char* baseTemp = strdup(path);
 	char* baseName = basename(baseTemp);
-	if(dir_add(dir_inode, ino, baseName, strlen(baseName)) == -1) {
+	if(dir_add(&dir_inode, ino, baseName, strlen(baseName)) == -1) {
 		write(1, "[TFS_MKDIR] Could find a spot to add an dirent in parent directory\n", 
 			sizeof("[TFS_MKDIR] Could find a spot to add an dirent in parent directory\n"));
 		free(baseTemp);
@@ -804,10 +796,10 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	initializeStat(&baseInode);
 	writei(baseInode.ino, &baseInode);
 	
-	if(dir_add(baseInode, baseInode.ino, ".", strlen(".")) == -1) {
+	if(dir_add(&baseInode, baseInode.ino, ".", strlen(".")) == -1) {
 		write(1, "Could not allocate . dirent, ran out of data blocks\n",
 			sizeof("Could not allocate . dirent, ran out of data blocks\n"));
-		if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+		if (dir_remove(&dir_inode, baseName, strlen(baseName)) == -1) {
 			printf("[E-mkdir]: Something really went wrong here, somehow added to parent but then parent said it does not have it\n");
 		}
 		free(baseTemp);
@@ -815,11 +807,10 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		return -EDQUOT;
 	}
 	
-	readi(baseInode.ino, &baseInode);
-	if(dir_add(baseInode, dir_inode.ino, "..", strlen("..")) == -1) {
+	if(dir_add(&baseInode, dir_inode.ino, "..", strlen("..")) == -1) {
 		write(1, "Could not allocate .. dirent, ran out of data blocks\n",
 			sizeof("Could not allocate .. dirent, ran out of data blocks\n"));
-		if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+		if (dir_remove(&dir_inode, baseName, strlen(baseName)) == -1) {
 			printf("[E-mkdir]: Something really went wrong here, somehow added to parent but then parent said it does not have it\n");
 		}
 		free(baseTemp);
@@ -828,7 +819,6 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	}
 	
 	free(baseTemp);
-	readi(dir_inode.ino, &dir_inode);
 	dir_inode.link += 1;
 	dir_inode.vstat.st_nlink += 1;
 	time(&(dir_inode.vstat.st_mtime));
@@ -882,7 +872,7 @@ static int tfs_rmdir(const char *path) {
 	
 	char* baseTemp = strdup(path);
 	char* baseName = basename(baseTemp);
-	if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+	if (dir_remove(&dir_inode, baseName, strlen(baseName)) == -1) {
 		write(1, "BIG ERROR IN RMDIR, did not find the entry to remove in parent directory\n",
 			sizeof("BIG ERROR IN RMDIR, did not find the entry to remove in parent directory\n"));
 		free(baseTemp);
@@ -894,7 +884,6 @@ static int tfs_rmdir(const char *path) {
 	// the base directory inode
 	freeInode(&base_dir_inode);
 	
-	readi(dir_inode.ino, &dir_inode);
 	dir_inode.link -= 1;
 	dir_inode.vstat.st_nlink -= 1;
 	time(&(dir_inode.vstat.st_mtime));
@@ -940,8 +929,8 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	
 	char* baseTemp = strdup(path);
 	char* baseName = basename(baseTemp);
-	if(dir_add(dir_inode, ino, baseName, strlen(baseName)) == -1) {
-		printf("[D-CREATE]: Failed to add the file to the parent directory, probably ran out of data-blocks\n");
+	if(dir_add(&dir_inode, ino, baseName, strlen(baseName)) == -1) {
+		printf("[D-CREATE]: Failed to add the file to the parent directory, probably ran out of inode-blocks\n");
 		free(baseTemp);
 		toggleBitInodeBitmap(ino);
 		bio_write(superBlock.i_bitmap_blk, inodeBitmap);
@@ -1171,7 +1160,7 @@ static int tfs_unlink(const char *path) {
 	free(dirTemp);
 	char* baseTemp = strdup(path);
 	char* baseName = basename(baseTemp);
-	if (dir_remove(dir_inode, baseName, strlen(baseName)) == -1) {
+	if (dir_remove(&dir_inode, baseName, strlen(baseName)) == -1) {
 		printf("[D-UNLINK]: Attempting to remove the file from the parent directory but failed somehow\n");
 		free(baseTemp);
 		return -1;
