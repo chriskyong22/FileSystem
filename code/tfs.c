@@ -112,7 +112,7 @@ int get_avail_blkno() {
 
 	// Step 3: Update data block bitmap and write to disk 
 	unsigned int maxByte = (superBlock.max_dnum + 1) / 8.0;
-	for(unsigned long byteIndex = 0; byteIndex < maxByte; byteIndex++) {
+	for (unsigned long byteIndex = 0; byteIndex < maxByte; byteIndex++) {
 		char* byteLocation = (dataBitmap + byteIndex);
 		// For each char, mask it to see if there is a free datablock within the char
 		// if there is a free datablock within a char, the char will not equal 255. 
@@ -570,17 +570,44 @@ int tfs_mkfs() {
 	
 	superBlock.magic_num = MAGIC_NUM;
 	superBlock.max_inum = MAX_INUM - 1;
-	superBlock.max_dnum = MAX_DNUM - 1;
+	
+	
 	superBlock.i_bitmap_blk = INODE_BITMAP_BLOCK;
 	superBlock.d_bitmap_blk = DATA_BITMAP_BLOCK;
 	superBlock.i_start_blk = INODE_REGION_BLOCK;
 	// INode Regions starts blockIndex 3 and spans across MAX_INUM / (BLOCK_SIZE/ INODE SIZE)
 	superBlock.d_start_blk = INODE_REGION_BLOCK + customCeil((MAX_INUM * 1.0) / MAX_INODES_PER_BLOCK);
 	
+	unsigned long numberOfBlocks = DISK_SIZE / BLOCK_SIZE;
+	if (numberOfBlocks <= superBlock.d_start_blk) {
+		perror("[E]: Not enough blocks to store the data blocks and potentially the other metadata\n");
+		return -1;
+	}
+	
+	// Remove all blocks used for superblock, inode bitmap, data bitmap, and 
+	// inode region. (we are isolating all the blocks reserved for solely data
+	// blocks)
+	numberOfBlocks -= superBlock.d_start_blk;
+	superBlock.max_dnum = numberOfBlocks < MAX_DNUM ? numberOfBlocks - 1 : MAX_DNUM - 1;
+	
 	char* superblockBuffer = calloc(1, BLOCK_SIZE);
 	memcpy(superblockBuffer, &superBlock, sizeof(struct superblock));
 	bio_write(SUPERBLOCK_BLOCK, superblockBuffer);
 	free(superblockBuffer);
+	
+	if ((superBlock.max_inum + 1) % 8 != 0) { 
+		int validBits = (superBlock.max_inum + 1) % 8;
+		int validBitsMask = (1 << validBits) - 1;
+		char setMask = BYTE_MASK ^ validBitsMask;
+		*(inodeBitmap + (PHYSICAL_BITMAP_SIZE - 1)) = setMask;
+	}
+	
+	if ((superBlock.max_dnum + 1) % 8 != 0) { 
+		int validBits = (superBlock.max_dnum + 1) % 8;
+		int validBitsMask = (1 << validBits) - 1;
+		char setMask = BYTE_MASK ^ validBitsMask;
+		*(dataBitmap + (PHYSICAL_BITMAP_SIZE - 1)) = setMask;
+	}
 	
 	struct inode rootInode = emptyInodeStruct;
 	rootInode.ino = get_avail_ino();
@@ -619,6 +646,8 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 		char* buffer = malloc(sizeof(char) * BLOCK_SIZE);
 		bio_read(SUPERBLOCK_BLOCK, buffer);
 		memcpy(&superBlock, buffer, sizeof(struct superblock));
+		printf("inodeBitmap Block %u\ndataBitmap Block %u\ninode region start block %u\ndata region start block %u\nmax inode number %u\nmax datablock number %u\n",
+			superBlock.i_bitmap_blk, superBlock.d_bitmap_blk, superBlock.i_start_blk, superBlock.d_start_blk, superBlock.max_inum, superBlock.max_dnum);
 		bio_read(INODE_BITMAP_BLOCK, buffer);
 		memcpy(&inodeBitmap, buffer, BLOCK_SIZE);
 		bio_read(DATA_BITMAP_BLOCK, buffer);
@@ -1196,6 +1225,7 @@ static void toggleBitDataBitmap(unsigned int blockIndex) {
 	int bitMask = 1 << (blockIndex % 8);
 	(*byteLocation) ^= (bitMask);
 }
+
 // Make sure to write to disk afterwards
 static void toggleBitInodeBitmap(uint16_t inodeNumber) {
 	char* byteLocation = inodeBitmap + (inodeNumber / 8);
