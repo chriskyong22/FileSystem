@@ -76,7 +76,7 @@ int get_avail_ino() {
 	// Step 2: Traverse inode bitmap to find an available slot
 
 	// Step 3: Update inode bitmap and write to disk 
-	unsigned int maxByte = (superBlock.max_inum + 1) / 8.0;
+	unsigned int maxByte = customCeil((superBlock.max_inum + 1) / 8.0);
 	for (unsigned int byteIndex = 0; byteIndex < maxByte; byteIndex++) {
 		char* byteLocation = (inodeBitmap + byteIndex);
 		// For each char, mask it to see if there is a free inode within the char
@@ -111,7 +111,7 @@ int get_avail_blkno() {
 	// Step 2: Traverse data block bitmap to find an available slot
 
 	// Step 3: Update data block bitmap and write to disk 
-	unsigned int maxByte = (superBlock.max_dnum + 1) / 8.0;
+	unsigned int maxByte = customCeil((superBlock.max_dnum + 1) / 8.0);
 	for (unsigned long byteIndex = 0; byteIndex < maxByte; byteIndex++) {
 		char* byteLocation = (dataBitmap + byteIndex);
 		// For each char, mask it to see if there is a free datablock within the char
@@ -270,6 +270,7 @@ int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirec
 			// Need to allocate new direct block 
 			indirectBlock[directIndex] = get_avail_blkno();
 			if (indirectBlock[directIndex] == -1) {
+				indirectBlock[directIndex] = 0;
 				printf("[W-addInDirect]: Failed to find free data block\n");
 				return -1;
 			}
@@ -328,6 +329,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			// need to allocate a new data block 
 			dir_inode->direct_ptr[directPointerIndex] = get_avail_blkno();
 			if (dir_inode->direct_ptr[directPointerIndex] == -1) {
+				dir_inode->direct_ptr[directPointerIndex] = 0;
 				printf("[W-ADD]: Could not find a free data block to use\n");
 				return -1;
 			}
@@ -1094,6 +1096,10 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 				if (indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] == -1) {
 					// Do not need to worry about writing this block to the disk because on the disk,
 					// this block will still be 0.
+					
+					// Safety Check (this line should not matter but doing it incase somehow -1 stays)
+					indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK] = 0;
+					
 					break;
 				}
 				// Inefficient implementation since each direct block allocation will result in disk write instead of 
