@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <libgen.h>
 #include <limits.h>
+#include <pthread.h>
 
 #include "block.h"
 #include "tfs.h"
@@ -37,8 +38,6 @@ void freeInode(struct inode* dir_inode);
 #define DIRECTORY_TYPE (1)
 #define HARD_LINK_TYPE (2)
 #define SYMBIOTIC_LINK_TYPE (3)
-#define MAX_DIRECT_POINTERS (16)
-#define MAX_INDIRECT_POINTERS (8)
 #define DIRECT_BLOCK_SIZE (BLOCK_SIZE)
 #define MAX_DIRECT_SIZE (MAX_DIRECT_POINTERS * DIRECT_BLOCK_SIZE)
 #define INDIRECT_BLOCK_SIZE (BLOCK_SIZE * BLOCK_SIZE)
@@ -57,6 +56,7 @@ struct superblock superBlock;
 static const struct dirent emptyDirentStruct;
 static const struct inode emptyInodeStruct;
 uint16_t rootInodeNumber;
+pthread_mutex_t globalLock = PTHREAD_MUTEX_INITIALIZER;
 
 // Declare your in-memory data structures here
 
@@ -633,7 +633,7 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 
   // Step 1b: If disk file is found, just initialize in-memory data structures
   // and read superblock from disk
-  	
+  	pthread_mutex_lock(&globalLock);
 	if (dev_open(diskfile_path) == -1) {
 		tfs_mkfs();
 	} else {
@@ -648,7 +648,7 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 		memcpy(&dataBitmap, buffer, BLOCK_SIZE);
 		free(buffer);
 	}
-	
+	pthread_mutex_unlock(&globalLock);
 	return NULL;
 }
 
@@ -657,9 +657,11 @@ static void tfs_destroy(void *userdata) {
 	// Step 1: De-allocate in-memory data structures
 
 	// Step 2: Close diskfile
+	pthread_mutex_lock(&globalLock);
 	bio_write(superBlock.i_bitmap_blk, inodeBitmap);
 	bio_write(superBlock.d_bitmap_blk, dataBitmap);
 	dev_close();
+	pthread_mutex_unlock(&globalLock);
 }
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
@@ -669,11 +671,14 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	// Step 2: fill attribute of file into stbuf from inode
 	printf("do_getattr to find %s\n", path);
 	struct inode inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
 		printf("Entry does not exist\n");
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	(*stbuf) = inode.vstat;
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
@@ -684,15 +689,20 @@ static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
 	// Step 2: If not find, return -1
 
 	struct inode dir_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (dir_inode.type != DIRECTORY_TYPE) {
 		printf("[D-OPENDIR]: Found %s path, but it is not a directory type but type %u", path, dir_inode.type);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOTDIR;
 	}
 	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
+	
+	pthread_mutex_unlock(&globalLock);
     return 0;
 }
 
@@ -703,7 +713,9 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
 	
 	struct inode dir_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &dir_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 
@@ -744,6 +756,7 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	}
 	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
@@ -766,9 +779,11 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	struct inode dir_inode = emptyInodeStruct;
 	char* dirTemp = strdup(path);
 	char* dirPath = dirname(dirTemp);
+	pthread_mutex_lock(&globalLock);
 	// Retrieve the parent directory inode
 	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
 		free(dirTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	free(dirTemp);
@@ -777,6 +792,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	if (ino == -1) {
 		write(1, "[TFS_MKDIR] Could not allocate an inode for the new directory\n", 
 			sizeof("[TFS_MKDIR] Could not allocate an inode for the new directory\n"));
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	
@@ -788,6 +804,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		free(baseTemp);
 		toggleBitInodeBitmap(ino);
 		bio_write(superBlock.i_bitmap_blk, inodeBitmap);
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	
@@ -806,6 +823,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		}
 		free(baseTemp);
 		freeInode(&baseInode);
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	
@@ -817,6 +835,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 		}
 		free(baseTemp);
 		freeInode(&baseInode);
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	
@@ -827,6 +846,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
 	
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
@@ -845,12 +865,15 @@ static int tfs_rmdir(const char *path) {
 	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
 	
 	struct inode base_dir_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &base_dir_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (base_dir_inode.type != DIRECTORY_TYPE) {
 		write(1, "Trying to remove a non-directory type using rmdir, invalid\n", 
 			sizeof("Trying to remove a non-directory type using rmdir, invalid\n"));
+		pthread_mutex_unlock(&globalLock);
 		return -ENOTDIR;
 	}
 	// Every directory will have 2 dirents (. and ..) including root.
@@ -858,6 +881,7 @@ static int tfs_rmdir(const char *path) {
 	if (base_dir_inode.size != (sizeof(struct dirent) * 2)) {
 		write(1, "Cannot remove directory, directory is not empty\n", 
 			sizeof("Cannot remove directory, directory is not empty\n"));
+		pthread_mutex_unlock(&globalLock);
 		return -ENOTEMPTY;
 	}
 	
@@ -868,6 +892,7 @@ static int tfs_rmdir(const char *path) {
 		write(1, "BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n",
 			sizeof("BIG ERROR in RMDIR, was able to clear base directory but could not find the parent directory\n"));	
 		free(dirTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -1;
 	}
 	free(dirTemp);
@@ -878,6 +903,7 @@ static int tfs_rmdir(const char *path) {
 		write(1, "BIG ERROR IN RMDIR, did not find the entry to remove in parent directory\n",
 			sizeof("BIG ERROR IN RMDIR, did not find the entry to remove in parent directory\n"));
 		free(baseTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -1;
 	}
 	free(baseTemp);
@@ -892,6 +918,7 @@ static int tfs_rmdir(const char *path) {
 	time(&(dir_inode.vstat.st_atime));
 	writei(dir_inode.ino, &dir_inode);
 	
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
@@ -917,8 +944,10 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	struct inode dir_inode = emptyInodeStruct;
 	char* dirTemp = strdup(path);
 	char* dirPath = dirname(dirTemp);
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
 		free(dirTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	free(dirTemp);
@@ -926,6 +955,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	int ino = get_avail_ino();
 	if (ino == -1) {
 		printf("[D-CREATE]: Ran out of inodes\n");
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	
@@ -936,6 +966,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 		free(baseTemp);
 		toggleBitInodeBitmap(ino);
 		bio_write(superBlock.i_bitmap_blk, inodeBitmap);
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	free(baseTemp);
@@ -946,6 +977,8 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	fileInode.valid = 1;
 	initializeStat(&fileInode);
 	writei(fileInode.ino, &fileInode);
+	
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
@@ -956,12 +989,18 @@ static int tfs_open(const char *path, struct fuse_file_info *fi) {
 	// Step 2: If not find, return -1
 	printf("[D-OPENFile] Looking for %s to open\n", path);
 	struct inode inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
+	
 	if (inode.type != FILE_TYPE) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
+	
+	pthread_mutex_unlock(&globalLock);
     return 0;
 }
 
@@ -975,15 +1014,19 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 
 	// Note: this function should return the amount of bytes you copied to buffer
 	struct inode file_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (file_inode.type != FILE_TYPE) {
 		printf("[D-READFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (offset >= file_inode.size) {
 		printf("[D-READFILE]: %lu Attempting to read at offset beyond or at the file size %u\n", offset, file_inode.size);
+		pthread_mutex_unlock(&globalLock);
 		return 0;
 	}
 	
@@ -1026,6 +1069,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 	}
 	time(&(file_inode.vstat.st_atime));
 	writei(file_inode.ino, &file_inode);
+	pthread_mutex_unlock(&globalLock);
 	return bytesCopied;
 }
 
@@ -1040,15 +1084,19 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	
 	// Note: this function should return the amount of bytes you write to disk
 	struct inode file_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (file_inode.type != FILE_TYPE) {
 		printf("[D-WRITEFILE]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (offset > file_inode.size) {
 		printf("[D-WRITEFILE]: Offset %lu is out of bounds %u of file size\n", offset, file_inode.size);
+		pthread_mutex_unlock(&globalLock);
 		return -ESPIPE;
 	}
 	
@@ -1124,6 +1172,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	}
 	printf("Bytes Written: %lu, File Size %u, Offset %lu\n", bytesWritten, file_inode.size, copyOffset);
 	if (bytesWritten == 0 && size != 0) {
+		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
 	}
 	file_inode.size += bytesWritten <= (file_inode.size - copyOffset) ? 0 : bytesWritten - (file_inode.size - copyOffset);
@@ -1131,6 +1180,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	time(&(file_inode.vstat.st_mtime));
 	time(&(file_inode.vstat.st_atime));
 	writei(file_inode.ino, &file_inode);
+	pthread_mutex_unlock(&globalLock);
 	return bytesWritten;
 }
 
@@ -1148,11 +1198,14 @@ static int tfs_unlink(const char *path) {
 
 	// Step 6: Call dir_remove() to remove directory entry of target file in its parent directory
 	struct inode file_inode = emptyInodeStruct;
+	pthread_mutex_lock(&globalLock);
 	if (get_node_by_path(path, rootInodeNumber, &file_inode) == -1) {
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	if (file_inode.type != FILE_TYPE) {
 		printf("[D-UNLINK]: %s Attempting to read on a non-file type but type %u\n", path, file_inode.type);
+		pthread_mutex_unlock(&globalLock);
 		return -1;
 	}
 	char* dirTemp = strdup(path);
@@ -1161,6 +1214,7 @@ static int tfs_unlink(const char *path) {
 	if (get_node_by_path(dirPath, rootInodeNumber, &dir_inode) == -1) {
 		printf("[D-UNLINK]: Attempting to retrieve the parent directory for file but failed somehow\n");
 		free(dirTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -ENOENT;
 	}
 	free(dirTemp);
@@ -1169,10 +1223,12 @@ static int tfs_unlink(const char *path) {
 	if (dir_remove(&dir_inode, baseName, strlen(baseName)) == -1) {
 		printf("[D-UNLINK]: Attempting to remove the file from the parent directory but failed somehow\n");
 		free(baseTemp);
+		pthread_mutex_unlock(&globalLock);
 		return -1;
 	}
 	free(baseTemp);
 	freeInode(&file_inode);
+	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
 
