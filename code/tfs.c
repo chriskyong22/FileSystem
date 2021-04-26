@@ -152,7 +152,7 @@ int readi(uint16_t ino, struct inode *inode) {
 	
 	unsigned int blockNumber = ino / MAX_INODES_PER_BLOCK;
 	unsigned int inodeBlockNumber = superBlock.i_start_blk + blockNumber;
-	printf("Ino Number %u | Offset %lu\n", ino, ino % MAX_INODES_PER_BLOCK);
+	//printf("Ino Number %u | Offset %lu\n", ino, ino % MAX_INODES_PER_BLOCK);
 	char buffer[BLOCK_SIZE];
 	bio_read(inodeBlockNumber, buffer); 
 	memcpy(inode, buffer + (sizeof(struct inode) * (ino % MAX_INODES_PER_BLOCK)),
