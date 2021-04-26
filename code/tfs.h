@@ -14,8 +14,8 @@
 #define _TFS_H
 
 #define MAGIC_NUM 0x5C3A
-#define MAX_INUM 1024
-#define MAX_DNUM 16384
+#define MAX_INUM 1024 // This is the maximum number of inodes (not max ino number)
+#define MAX_DNUM 16384 // This is the maximum number of data blocks (not max data block number)
 #define MAX_DIRECT_POINTERS (16)
 #define MAX_INDIRECT_POINTERS (8)
 
@@ -35,8 +35,8 @@ struct inode {
 	uint32_t	size;				/* size of the file */
 	uint32_t	type;				/* type of the file */
 	uint32_t	link;				/* link count */
-	int			direct_ptr[16];		/* direct pointer to data block */
-	int			indirect_ptr[8];	/* indirect pointer to data block */
+	int			direct_ptr[MAX_DIRECT_POINTERS];		/* direct pointer to data block */
+	int			indirect_ptr[MAX_INDIRECT_POINTERS];	/* indirect pointer to data block */
 	struct stat	vstat;				/* inode stat */
 };
 

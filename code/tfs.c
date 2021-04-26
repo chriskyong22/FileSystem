@@ -1101,7 +1101,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	}
 	
 	off_t copyOffset = offset;
-	printf("[D-WRITEFILE] Writing %lu bytes at offset %lu: %s\n", size, offset, buffer);
+	printf("[D-WRITEFILE] Writing %lu bytes at offset %lu\n", size, offset);
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesWritten = 0;
 	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
