@@ -14,7 +14,7 @@
 #define _TFS_H
 
 #define MAGIC_NUM 0x5C3A
-#define MAX_INUM 1024 // This is the maximum number of inodes (not max ino number)
+#define MAX_INUM 1024 // This is the maximum number of inode (not max ino number)
 #define MAX_DNUM 16384 // This is the maximum number of data blocks (not max data block number)
 #define MAX_DIRECT_POINTERS (16)
 #define MAX_INDIRECT_POINTERS (8)

@@ -487,21 +487,25 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	if (path[index] == '\0') {
 		return 1;
 	}
+	char* modifiedPath = strdup(path);
+	// Solves if the path will have trailing '/'
+	while (modifiedPath[strlen(path) - 1] == '/') {
+		modifiedPath[strlen(path) - 1] = '\0';
+	}
 	
 	struct dirent dirEntry = emptyDirentStruct;
-	// Currently assuming the path will not have trailing '/', function will break if so
-	
-	while(path[index] != '\0') {
-		if (path[index] == '/') { 
+	while(modifiedPath[index] != '\0') {
+		if (modifiedPath[index] == '/') { 
 			if (dir_find(inode->ino, pathBuffer, pathBufferIndex, &dirEntry) == -1) {
 				printf("[D-GNBP]: Failed to find %s with length %u\n", pathBuffer, pathBufferIndex);
+				free(modifiedPath);
 				return -1;
 			}
 			readi(dirEntry.ino, inode);
 			memset(pathBuffer, '\0', pathBufferIndex);
 			pathBufferIndex = 0;
 		} else {
-			pathBuffer[pathBufferIndex] = path[index];
+			pathBuffer[pathBufferIndex] = modifiedPath[index];
 			pathBufferIndex++; 
 		}
 		index++;
@@ -509,10 +513,12 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
 	
 	if (dir_find(inode->ino, pathBuffer, pathBufferIndex, &dirEntry) == -1) {
 		printf("[D-GNBP]: Failed to find %s with length %u\n", pathBuffer, pathBufferIndex);
+		free(modifiedPath);
 		return -1;
 	}
 	
 	readi(dirEntry.ino, inode);
+	free(modifiedPath);
 	return 1;
 }
 
@@ -1030,7 +1036,7 @@ static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, s
 		return 0;
 	}
 	
-	printf("[D-READFILE] Reading %lu bytes at offset %lu: %s\n", size, offset, buffer);
+	printf("[D-READFILE] Reading %lu bytes at offset %lu\n", size, offset);
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesCopied = 0;
 	size_t bytesToCopyInBlock = size <= (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
