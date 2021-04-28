@@ -258,7 +258,7 @@ int addInDirectBlock(char* datablock, struct dirent* toInsert, int directBlockIn
 	return -1;
 }
 
-int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirectBlockIndex) {
+int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirectBlockIndex, struct inode* parentInode) {
 	char directDataBlock[BLOCK_SIZE] = {0};
 	for (int directIndex = 0; directIndex < DIRECT_POINTERS_IN_BLOCK; directIndex++) {
 		if (indirectBlock[directIndex] != 0) { 
@@ -280,6 +280,7 @@ int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirec
 			memset(directDataBlock, 0, BLOCK_SIZE);
 			memcpy(directDataBlock, toInsert, sizeof(struct dirent));
 			bio_write(indirectBlock[directIndex], directDataBlock);
+			parentInode->vstat.st_blocks += 1;
 			return 1;
 		}
 	}
@@ -340,6 +341,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			// Update the directory inode (with the new data block and size)
 			dir_inode->size += sizeof(struct dirent);
 			dir_inode->vstat.st_size += sizeof(struct dirent);
+			dir_inode->vstat.st_blocks += 1;
 			writei(dir_inode->ino, dir_inode);
 			return 1;
 		}
@@ -349,7 +351,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 	for (int indirectPointerIndex = 0; indirectPointerIndex < MAX_INDIRECT_POINTERS; indirectPointerIndex++) {
 		if (dir_inode->indirect_ptr[indirectPointerIndex] != 0) {
 			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], datablock);
-			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode->indirect_ptr[indirectPointerIndex]) == 1) {
+			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode->indirect_ptr[indirectPointerIndex], dir_inode) == 1) {
 				dir_inode->size += sizeof(struct dirent);
 				dir_inode->vstat.st_size += sizeof(struct dirent);
 				writei(dir_inode->ino, dir_inode);
@@ -385,6 +387,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			dir_inode->indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
 			dir_inode->size += sizeof(struct dirent);
 			dir_inode->vstat.st_size += sizeof(struct dirent);
+			dir_inode->vstat.st_blocks += 2;
 			writei(dir_inode->ino, dir_inode);
 			return 1;
 		}
@@ -1107,7 +1110,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	}
 	
 	off_t copyOffset = offset;
-	printf("[D-WRITEFILE] Writing %lu bytes at offset %lu\n", size, offset);
+	//printf("[D-WRITEFILE] Writing %lu bytes at offset %lu\n", size, offset);
 	unsigned int pointer = offset / DIRECT_BLOCK_SIZE;
 	size_t bytesWritten = 0;
 	size_t bytesToCopyInBlock = size < (DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE)) ? size : DIRECT_BLOCK_SIZE - (offset % DIRECT_BLOCK_SIZE);
@@ -1124,6 +1127,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 					file_inode.direct_ptr[pointer] = 0;
 					break;
 				}
+				file_inode.vstat.st_blocks += 1;
 				memset(datablock, 0, BLOCK_SIZE);
 			} else {
 				bio_read(file_inode.direct_ptr[pointer], datablock);
@@ -1139,6 +1143,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 					file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK] = 0;
 					break;
 				}
+				file_inode.vstat.st_blocks += 1;
 				memset(indirectBlock, 0, BLOCK_SIZE);
 			} else { 
 				if (previousPointer == 0 || (((pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK) != ((previousPointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK))) {
@@ -1161,6 +1166,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 				// exiting the loop (either through a break or size == 0, will have to check if file_inode.indirect_ptr was 
 				// last operation) or loading a new indirect block from the disk.
 				bio_write(file_inode.indirect_ptr[(pointer - MAX_DIRECT_POINTERS) / DIRECT_POINTERS_IN_BLOCK], indirectBlock);
+				file_inode.vstat.st_blocks += 1;
 				memset(datablock, 0, BLOCK_SIZE);
 			} else {
 				bio_read(indirectBlock[(pointer - MAX_DIRECT_POINTERS) % DIRECT_POINTERS_IN_BLOCK], datablock);
@@ -1176,7 +1182,7 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 		previousPointer = pointer;
 		pointer++;
 	}
-	printf("Bytes Written: %lu, File Size %u, Offset %lu\n", bytesWritten, file_inode.size, copyOffset);
+	//printf("Bytes Written: %lu, File Size %u, Offset %lu\n", bytesWritten, file_inode.size, copyOffset);
 	if (bytesWritten == 0 && size != 0) {
 		pthread_mutex_unlock(&globalLock);
 		return -EDQUOT;
