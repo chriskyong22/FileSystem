@@ -281,6 +281,7 @@ int addInIndirectBlock (int* indirectBlock, struct dirent* toInsert, int indirec
 			memcpy(directDataBlock, toInsert, sizeof(struct dirent));
 			bio_write(indirectBlock[directIndex], directDataBlock);
 			parentInode->vstat.st_blocks += 1;
+			parentInode->vstat.st_size += BLOCK_SIZE;
 			return 1;
 		}
 	}
@@ -322,7 +323,6 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			bio_read(dir_inode->direct_ptr[directPointerIndex], datablock);
 			if (addInDirectBlock(datablock, &toInsertEntry, dir_inode->direct_ptr[directPointerIndex]) == 1) {
 				dir_inode->size += sizeof(struct dirent);
-				dir_inode->vstat.st_size += sizeof(struct dirent);
 				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
@@ -340,7 +340,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			bio_write(dir_inode->direct_ptr[directPointerIndex], datablock);
 			// Update the directory inode (with the new data block and size)
 			dir_inode->size += sizeof(struct dirent);
-			dir_inode->vstat.st_size += sizeof(struct dirent);
+			dir_inode->vstat.st_size += BLOCK_SIZE;
 			dir_inode->vstat.st_blocks += 1;
 			writei(dir_inode->ino, dir_inode);
 			return 1;
@@ -353,7 +353,6 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], datablock);
 			if (addInIndirectBlock((int*)datablock, &toInsertEntry, dir_inode->indirect_ptr[indirectPointerIndex], dir_inode) == 1) {
 				dir_inode->size += sizeof(struct dirent);
-				dir_inode->vstat.st_size += sizeof(struct dirent);
 				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
@@ -386,7 +385,7 @@ int dir_add(struct inode* dir_inode, uint16_t f_ino, const char *fname, size_t n
 			// Update the inode to include the new indirect block and the new size
 			dir_inode->indirect_ptr[indirectPointerIndex] = indirectBlockIndex;
 			dir_inode->size += sizeof(struct dirent);
-			dir_inode->vstat.st_size += sizeof(struct dirent);
+			dir_inode->vstat.st_size += BLOCK_SIZE * 2;
 			dir_inode->vstat.st_blocks += 2;
 			writei(dir_inode->ino, dir_inode);
 			return 1;
@@ -444,7 +443,6 @@ int dir_remove(struct inode* dir_inode, const char *fname, size_t name_len) {
 			bio_read(dir_inode->direct_ptr[directPointerIndex], datablock);
 			if (removeInDirectBlock(datablock, fname, name_len, dir_inode->direct_ptr[directPointerIndex]) == 1) {
 				dir_inode->size -= sizeof(struct dirent);
-				dir_inode->vstat.st_size -= sizeof(struct dirent);
 				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
@@ -457,7 +455,6 @@ int dir_remove(struct inode* dir_inode, const char *fname, size_t name_len) {
 			bio_read(dir_inode->indirect_ptr[indirectPointerIndex], datablock);
 			if (removeInIndirectBlock((int*)datablock, fname, name_len, dir_inode->indirect_ptr[indirectPointerIndex]) == 1) {
 				dir_inode->size -= sizeof(struct dirent);
-				dir_inode->vstat.st_size -= sizeof(struct dirent);
 				writei(dir_inode->ino, dir_inode);
 				return 1;
 			}
