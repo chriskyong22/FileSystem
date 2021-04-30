@@ -984,6 +984,10 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	initializeStat(&fileInode);
 	writei(fileInode.ino, &fileInode);
 	
+	time(&(dir_inode.vstat.st_mtime));
+	time(&(dir_inode.vstat.st_atime));
+	writei(dir_inode.ino, &dir_inode);
+	
 	pthread_mutex_unlock(&globalLock);
 	return 0;
 }
